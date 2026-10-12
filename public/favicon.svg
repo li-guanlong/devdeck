@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="ddFavLux" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7dd3fc"/>
+      <stop offset=".5" stop-color="#a5b4fc"/>
+      <stop offset="1" stop-color="#e7c873"/>
+    </linearGradient>
+    <linearGradient id="ddFavD" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e7c873"/>
+      <stop offset="1" stop-color="#b08d57"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="url(#ddFavLux)">
+    <path d="M32 5l23.5 13.5v27L32 59 8.5 45.5v-27z" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M32 12.5l17 9.8v19.4l-17 9.8-17-9.8V22.3z" stroke-width="1.4" opacity=".55"/>
+  </g>
+  <path d="M25.5 23h7a9.5 9.5 0 0 1 0 19h-7z" fill="none" stroke="url(#ddFavD)" stroke-width="4" stroke-linejoin="round"/>
+  <rect x="35.8" y="36.8" width="5.4" height="5.4" transform="rotate(45 38.5 39.5)" fill="url(#ddFavD)"/>
+</svg>

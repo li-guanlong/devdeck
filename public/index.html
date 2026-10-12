@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DevDeck · by GLNB</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" sizes="any">
+  <meta name="theme-color" content="#0c1017">
+  <link rel="stylesheet" href="styles.css">
+  <style>.brand{display:flex;align-items:center;gap:10px}.brand .brand-logo{height:46px;width:auto;flex:none;letter-spacing:normal;filter:drop-shadow(0 2px 12px rgba(231,200,115,.28))}.brand .brand-logo svg{display:block;height:46px;width:auto}.brand .lg-main{fill:var(--txt)}.brand .lg-sub{fill:var(--mut)}.brand .lg-rule{stroke:var(--border)}#refreshHint{font-size:11px;color:var(--mut);font-weight:400;letter-spacing:1px}</style>
+</head>
+
+<body>
+  <div class="header">
+    <h1 class="brand"><span class="brand-logo" role="img" aria-label="DevDeck by GLNB"><svg viewBox="0 0 320 64"><defs><linearGradient id="ddLogoG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7dd3fc"/><stop offset=".5" stop-color="#a5b4fc"/><stop offset="1" stop-color="#e7c873"/></linearGradient><linearGradient id="ddLogoBack" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e7c873"/><stop offset="1" stop-color="#b08d57"/></linearGradient><linearGradient id="ddLogoTxt" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#a5f3fc"/><stop offset=".55" stop-color="#22d3ee"/><stop offset="1" stop-color="#a5b4fc"/></linearGradient></defs><g fill="none" stroke="url(#ddLogoG)"><path d="M32 6l22.5 13v26L32 58 9.5 45V19z" stroke-width="2.5" stroke-linejoin="round"/><path d="M32 13l16.5 9.5v19L32 51l-16.5-9.5v-19z" stroke-width="1" opacity=".55"/></g><path d="M26 23h6.5a9 9 0 0 1 0 18H26z" fill="none" stroke="url(#ddLogoBack)" stroke-width="3.4" stroke-linejoin="round"/><rect x="35.6" y="36.6" width="5" height="5" transform="rotate(45 38.1 39.1)" fill="url(#ddLogoBack)"/><line x1="66" y1="14" x2="66" y2="50" stroke="url(#ddLogoG)" stroke-width="1" opacity=".6"/><text x="78" y="33" font-family="Georgia, 'Times New Roman', serif" font-size="25" font-weight="700" letter-spacing=".5" class="lg-main">DevDeck</text><text x="79" y="50" font-family="Segoe UI, Arial, sans-serif" font-size="10.5" font-weight="600" letter-spacing="3.4" class="lg-sub">BY GLNB</text><line x1="150" y1="46" x2="230" y2="46" class="lg-rule" stroke-width="1"/></svg></span></h1>
+    <div style="display:flex;gap:8px;align-items:center"><button class="btn btn-ghost" id="themeBtn" onclick="toggleTheme()" title="切换明暗主题">☀️ 亮色</button><button class="btn btn-ghost" id="refreshBtn" onclick="manualRefreshServices(this)" title="只刷新服务状态（运行中服务+本地项目按钮）"><span class="rfic"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M13.6 8a5.6 5.6 0 1 1-1.63-3.95" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M13.8 1.4v3.1h-3.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span> 刷新</button>
+      <div class="badge" id="updateTime">--</div>
+    </div>
+  </div>
+  <div class="conn-err" id="connErr" style="display:none">⚠ 连不上 DevDeck 服务的数据接口。请确认服务在运行（node server.js，默认端口 3300）。<span id="connMsg"></span></div>
+
+  <div class="grid">
+    <!-- 本地 dev server 管理 -->
+    <div class="card span12">
+      <div class="sec-head">
+        <div class="tabs">
+          <button id="tabRun" class="on" onclick="switchTab('run')"><span>🟢</span>运行中服务<span class="count"
+              id="cntRun">0</span></button>
+          <button id="tabCustom" onclick="switchTab('custom')"><span>🔧</span>本地项目<span class="count"
+              id="cntCustom">0</span></button>
+        </div>
+      </div>
+      <div class="batch-bar" id="svcBar"><label><input type="checkbox" id="svcAll" onchange="toggleSvcAll()"> 全选<span id="svcSelN"></span></label><button class="btn btn-red" onclick="stopSvcSelected()">⏹ 全部终止</button><button class="btn btn-blue" onclick="restartAllManaged(this)">🔄 重启所选</button></div><div id="paneRun"></div>
+      <div id="paneCustom" style="display:none">
+        <div class="batch-bar"><label><input type="checkbox" id="customAll" onchange="toggleCustomAll()"> 全选<span id="customSelN"></span></label><button class="btn btn-green" id="btnStartAll" onclick="startAll()" disabled>▶ 全部启动</button><button class="btn btn-blue" id="btnAdd" onclick="openAdd()">+ 新增项目</button><button class="btn btn-ghost" onclick="cfgExport()" title="导出全部本地项目配置为 JSON（网页 ↔ exe 迁移用）">⬇ 导出</button><button class="btn btn-ghost" onclick="document.getElementById('cfgFile').click()" title="从 JSON 导入本地项目配置（按 id 合并）">⬆ 导入</button><input type="file" id="cfgFile" accept="application/json,.json" style="display:none" onchange="cfgImportPicked(event)"></div>
+        <div id="customList"></div>
+        <div class="hint-line">💡 手动填写目录与命令；配置端口后启动前自动检测占用，避免两项目抢同一端口。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 新增本地项目 -->
+  <div class="modal" id="addModal">
+    <div class="box addm" style="width:660px">
+      <div class="mhead"><b><i class="addm-ico">＋</i>新增本地项目</b><button class="btn btn-ghost" onclick="closeAdd()">✕</button></div>
+      <div class="addm-body">
+        <div class="addm-sec"><span class="addm-n">1</span><span class="addm-t">基本信息</span><span class="addm-line"></span></div>
+        <div class="form addm-grid3" style="margin:0">
+          <div><label>项目名称 <i class="req">*</i></label><input id="fName" placeholder="如：我的后台" maxlength="40" autocomplete="off"></div>
+          <div><label>技术架构</label>
+            <div class="dd" id="ddStack"><input id="fStack" placeholder="选择或输入" autocomplete="off"><span
+                class="dd-arr">▾</span>
+              <ul class="dd-list"></ul>
+            </div>
+          </div>
+          <div><label>端口 <em class="opt">可选</em><span id="portHint" class="st" style="cursor:pointer"
+                title="被占用时点击自动填入可用端口"></span></label>
+            <div class="dd" id="ddPort"><input id="fPort" placeholder="选择或输入" autocomplete="off"><span
+                class="dd-arr">▾</span>
+              <ul class="dd-list"></ul>
+            </div>
+          </div>
+        </div>
+        <div class="addm-sec"><span class="addm-n">2</span><span class="addm-t">启动配置</span><span class="addm-line"></span></div>
+        <div class="form" style="margin:0">
+          <div class="span2"><label>启动目录 <em class="opt">完整路径</em></label>
+            <div class="dir-box"><input id="fDir" class="inp" placeholder="如 D:\code\my-app"><button class="btn btn-blue"
+                onclick="pickDir('fDir')">📁 浏览</button></div>
+          </div>
+          <div class="span2"><label>启动命令</label>
+            <div class="dd" id="ddCmd"><input id="fCmd" placeholder="选择或输入" autocomplete="off"><span
+                class="dd-arr">▾</span>
+              <ul class="dd-list"></ul>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="mfoot"><button class="btn btn-ghost" onclick="closeAdd()">取消</button><button class="btn btn-blue addm-ok"
+          onclick="addCustom()">＋ 添加项目</button></div>
+    </div>
+  </div>
+
+  <!-- 内置目录选择器（服务端浏览，不走系统上传框） -->
+  <div class="modal" id="dirModal">
+    <div class="box" style="width:560px">
+      <div class="mhead"><b>📁 选择项目目录</b><button class="btn btn-ghost" onclick="closeDirModal()">✕</button></div>
+      <div class="addm-body">
+        <div class="dir-bar"><button class="btn btn-ghost" id="dirUp" onclick="dirGoUp()">↑ 上级</button><div class="dir-cur" id="dirCur" title="">…</div></div>
+        <div class="dir-tip" id="dirTip"></div>
+        <ul class="dir-list" id="dirList"></ul>
+      </div>
+      <div class="mfoot"><button class="btn btn-ghost" onclick="closeDirModal()">取消</button><button class="btn btn-blue addm-ok" onclick="dirConfirm()">✔ 选定目录</button></div>
+    </div>
+  </div>
+
+  <!-- 编辑本地项目 -->
+  <div class="modal" id="editModal">
+    <div class="box" style="width:440px">
+      <div class="mhead"><b>✏️ 编辑本地项目</b><button class="btn btn-ghost" onclick="closeEdit()">✕</button></div>
+      <div style="padding:12px 16px;display:flex;flex-direction:column;gap:9px">
+        <div><label>项目名称</label><input id="eName" class="inp"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px">
+          <div><label>技术架构</label>
+            <div class="dd" id="ddEStack"><input id="eStack" autocomplete="off"><span class="dd-arr">▾</span>
+              <ul class="dd-list"></ul>
+            </div>
+          </div>
+          <div><label>端口（可选）</label>
+            <div class="dd" id="ddEPort"><input id="ePort" placeholder="留空自动" autocomplete="off"><span
+                class="dd-arr">▾</span>
+              <ul class="dd-list"></ul>
+            </div>
+          </div>
+        </div>
+        <div><label>启动目录</label><div class="dir-box"><input id="eDir" class="inp"><button class="btn btn-blue" onclick="pickDir('eDir')">📁 浏览</button></div></div>
+        <div><label>启动命令</label>
+          <div class="dd" id="ddECmd"><input id="eCmd" autocomplete="off"><span class="dd-arr">▾</span>
+            <ul class="dd-list"></ul>
+          </div>
+        </div>
+      </div>
+      <div class="mfoot"><button class="btn btn-ghost" onclick="closeEdit()">取消</button><button class="btn btn-green"
+          onclick="saveEdit()">💾 保存</button></div>
+    </div>
+  </div>
+
+  <!-- 启动日志弹窗 -->
+  <div class="modal" id="logModal">
+    <div class="box" style="width:660px">
+      <div class="mhead"><b id="logTitle">启动日志</b><span class="sub" id="logMeta"></span><button class="btn btn-ghost"
+          onclick="closeLogModal()">✕</button></div>
+      <pre class="logbody" id="logBody">加载中…</pre>
+      <div class="mfoot"><span class="sub" style="margin-right:auto">超 5MB 自动瘦身（保留末尾 1MB），每 10 分钟巡检</span><button
+          class="btn btn-red" onclick="delLog()">🗑 删除日志</button><button class="btn btn-ghost"
+          onclick="closeLogModal()">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- AI 诊断弹窗 -->
+  <div class="modal" id="diagModal">
+    <div class="box" style="width:620px">
+      <div class="mhead"><b>🤖 辅助诊断</b><button class="btn btn-ghost" onclick="closeDiag()">✕</button></div>
+      <div style="padding:12px 16px;max-height:60vh;overflow:auto" id="diagBody"><div class="empty">分析中…</div></div>
+      <div class="mfoot"><button class="btn btn-ghost" onclick="closeDiag()">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- 通用主题弹窗（确认 / 提示，替代系统 alert/confirm） -->
+  <div class="modal" id="dlgModal">
+    <div class="box" style="width:400px">
+      <div class="mhead"><b id="dlgTitle">提示</b></div>
+      <div class="dlg-body" id="dlgBody"></div>
+      <div class="mfoot" id="dlgFoot"></div>
+    </div>
+  </div>
+
+<script src="app.js"></script>
+</body>
+
+</html>

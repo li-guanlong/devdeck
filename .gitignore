@@ -1,0 +1,9 @@
+node_modules/
+*.log
+# electron-builder 产物（112MB+，不进仓库；.icon-ico 缓存很小，留着加速二次打包）
+release/win-unpacked/
+release-new/
+release/*.exe
+release/*.blockmap
+release/builder-debug.yml
+release/builder-effective-config.yaml

@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <title>DevDeck 悬浮卡片</title>
+  <style>
+    /* ===== 悬浮卡片样式：透明底 + 半透明玻璃，跟随明暗主题（CSS 变量） ===== */
+    /* 默认：深色主题（与主看板 dark 一致） */
+    :root {
+      --panel-bg: rgba(18, 24, 34, 0.9);
+      --panel-border: rgba(148, 163, 184, 0.22);
+      --head-border: rgba(148, 163, 184, 0.14);
+      --txt: #e2e8f0;
+      --mut: #7d8aa0;
+      --foot: #5f6c80;
+      --acc: #22d3ee;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --err: #f87171;
+      --itembg: rgba(148, 163, 184, 0.06);
+      --item-border: rgba(148, 163, 184, 0.1);
+      --item-border-hover: rgba(34, 211, 238, 0.3);
+      --chip: rgba(148, 163, 184, 0.16);
+      --port-bg: rgba(56, 189, 248, 0.12);
+      --port-border: rgba(56, 189, 248, 0.25);
+      --btn-border: rgba(148, 163, 184, 0.3);
+      --btn-hover-border: rgba(34, 211, 238, 0.5);
+      --open-bg: rgba(34, 211, 238, 0.15);
+      --kill-bg: rgba(248, 113, 113, 0.15);
+      --scroll: rgba(148, 163, 184, 0.25);
+    }
+
+    /* 亮色主题（主看板 localStorage devdeck_theme=light 时生效） */
+    [data-theme="light"] {
+      --panel-bg: rgba(255, 255, 255, 0.94);
+      --panel-border: rgba(15, 40, 70, 0.18);
+      --head-border: rgba(15, 40, 70, 0.1);
+      --txt: #16233a;
+      --mut: #5d6f88;
+      --foot: #5d6f88;
+      --acc: #0284a8;
+      --ok: #0a9b6c;
+      --warn: #b45309;
+      --err: #dc2626;
+      --itembg: rgba(15, 40, 70, 0.05);
+      --item-border: rgba(15, 40, 70, 0.1);
+      --item-border-hover: rgba(2, 132, 168, 0.35);
+      --chip: rgba(15, 40, 70, 0.12);
+      --port-bg: rgba(2, 132, 168, 0.1);
+      --port-border: rgba(2, 132, 168, 0.28);
+      --btn-border: rgba(15, 40, 70, 0.18);
+      --btn-hover-border: rgba(2, 132, 168, 0.5);
+      --open-bg: rgba(2, 132, 168, 0.12);
+      --kill-bg: rgba(220, 38, 38, 0.1);
+      --scroll: rgba(15, 40, 70, 0.22);
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      overflow: hidden;
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* 整个卡片可拖动；内部按钮/链接区域禁止拖动 */
+    #card {
+      box-sizing: border-box;
+      width: 100vw;
+      height: 100vh;
+      padding: 10px;
+      -webkit-app-region: drag;
+    }
+
+    #card.no-drag,
+    #card .no-drag,
+    #card button,
+    #card a,
+    #card .interactive {
+      -webkit-app-region: no-drag;
+    }
+
+    .panel {
+      box-sizing: border-box;
+      width: 100%;
+      height: 100%;
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px;
+      backdrop-filter: blur(12px);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      color: var(--txt);
+      transition: background .25s, border-color .25s, color .25s;
+    }
+
+    /* 头部：标题 + 服务数 + 操作 */
+    .head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--head-border);
+      flex: none;
+    }
+
+    .head .logo {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 8px rgba(52, 211, 153, 0.9);
+      flex: none;
+    }
+
+    .head .ttl {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      flex: none;
+    }
+
+    .head .cnt {
+      font-size: 10px;
+      color: var(--mut);
+      background: var(--chip);
+      border-radius: 8px;
+      padding: 1px 7px;
+      font-family: Consolas, monospace;
+    }
+
+    .head .spacer {
+      flex: 1;
+    }
+
+    .head .hbtn {
+      -webkit-app-region: no-drag;
+      background: transparent;
+      border: 1px solid var(--btn-border);
+      color: var(--mut);
+      border-radius: 6px;
+      font-size: 14px;
+      width: 26px;
+      height: 26px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0;
+      transition: .15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .head .hbtn:hover {
+      color: var(--acc);
+      border-color: var(--btn-hover-border);
+    }
+
+    .head .hbtn.pin.on {
+      color: var(--warn);
+      border-color: rgba(251, 191, 36, 0.5);
+    }
+
+    /* 服务列表 */
+    .list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px 8px;
+      -webkit-app-region: no-drag;
+    }
+
+    .list::-webkit-scrollbar {
+      width: 5px;
+    }
+
+    .list::-webkit-scrollbar-thumb {
+      background: var(--scroll);
+      border-radius: 3px;
+    }
+
+    .item {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: var(--itembg);
+      border: 1px solid var(--item-border);
+      margin-bottom: 6px;
+      transition: border-color .15s, background .25s;
+    }
+
+    .item:hover {
+      border-color: var(--item-border-hover);
+    }
+
+    /* 行1：项目名 + 端口 + 操作按钮 */
+    .item .row1 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .item .nm {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .item .nm b {
+      font-size: 12px;
+      display: block;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .item .nm .pid {
+      font-size: 9.5px;
+      color: var(--mut);
+      font-family: Consolas, monospace;
+      margin-top: 1px;
+    }
+
+    .item .port {
+      flex: none;
+      font-size: 10px;
+      color: var(--acc);
+      font-family: Consolas, monospace;
+      background: var(--port-bg);
+      border: 1px solid var(--port-border);
+      border-radius: 8px;
+      padding: 1px 7px;
+    }
+
+    .item .ops {
+      display: flex;
+      gap: 4px;
+      flex: none;
+    }
+
+    /* 行2：资源信息独占整行，不再被按钮挤压（修复 CPU 遮挡） */
+    .item .row2 {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .item .meta {
+      flex: 1;
+      display: flex;
+      gap: 10px;
+      font-size: 10px;
+      color: var(--mut);
+      font-family: Consolas, monospace;
+      white-space: nowrap;
+      min-width: 0;
+    }
+
+    .item .meta b {
+      color: var(--txt);
+      font-weight: 600;
+    }
+
+    .item .ibtn {
+      -webkit-app-region: no-drag;
+      background: transparent;
+      border: 1px solid;
+      border-radius: 5px;
+      font-size: 9.5px;
+      line-height: 1.2;
+      cursor: pointer;
+      padding: 2px 6px;
+      transition: .15s;
+      color: var(--mut);
+      border-color: var(--btn-border);
+      white-space: nowrap;
+    }
+
+    .item .ibtn.open {
+      color: var(--acc);
+      border-color: rgba(2, 132, 168, 0.4);
+    }
+
+    .item .ibtn.open:hover {
+      background: var(--open-bg);
+    }
+
+    .item .ibtn.reboot {
+      color: var(--ok);
+      border-color: rgba(10, 155, 108, 0.4);
+    }
+
+    .item .ibtn.reboot:hover {
+      background: var(--ok);
+      color: #fff;
+    }
+
+    .item .ibtn.kill {
+      color: var(--err);
+      border-color: rgba(248, 113, 113, 0.4);
+    }
+
+    .item .ibtn.kill:hover {
+      background: var(--kill-bg);
+    }
+
+    .item .ibtn:disabled {
+      opacity: .5;
+      cursor: wait;
+    }
+
+    .empty {
+      text-align: center;
+      color: var(--mut);
+      font-size: 11px;
+      padding: 16px 8px;
+    }
+
+    .foot {
+      flex: none;
+      padding: 6px 12px;
+      border-top: 1px solid var(--head-border);
+      font-size: 9.5px;
+      color: var(--foot);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .foot .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--ok);
+      flex: none;
+    }
+
+    .foot .tm {
+      margin-left: auto;
+      font-family: Consolas, monospace;
+    }
+
+    /* 折叠模式：只有一个小状态条 */
+    #card.collapsed .panel {
+      height: auto;
+    }
+
+    #card.collapsed .list,
+    #card.collapsed .foot {
+      display: none;
+    }
+
+    #card.collapsed .head .ttl {
+      display: none;
+    }
+
+    /* 折叠按钮与头部 hbtn 同尺寸，折叠态下同样可见 */
+    .collapse-toggle {
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .collapse-toggle:hover {
+      color: var(--acc);
+      border-color: var(--btn-hover-border);
+    }
+  </style>
+</head>
+
+<body>
+  <div id="card">
+    <div class="panel">
+      <div class="head">
+        <span class="logo"></span>
+        <span class="ttl">DEV<span style="color:var(--acc)">·</span>DECK</span>
+        <span class="cnt" id="cnt">0</span>
+        <span class="spacer"></span>
+        <button class="hbtn collapse-toggle" id="toggle" title="折叠/展开">▾</button>
+        <button class="hbtn theme" id="theme" title="切换主题">🌙</button>
+        <button class="hbtn pin" id="pin" title="置顶开关">📌</button>
+        <button class="hbtn" id="close" title="隐藏悬浮卡片">✕</button>
+      </div>
+      <div class="list" id="list"></div>
+      <div class="foot">
+        <span class="dot"></span>
+        <span id="state">连接中…</span>
+        <span class="tm" id="tm">--</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="overlay.js"></script>
+</body>
+
+</html>

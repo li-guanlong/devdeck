@@ -1,0 +1,47 @@
+[
+  {
+    "id": "mumder7t",
+    "name": "南网项目",
+    "dir": "D:\\GitLab-DLLIN\\_using_tsfe\\tsfe-ui",
+    "cmd": "pnpm serve",
+    "port": 5178,
+    "stack": "Vite",
+    "createdAt": 1790667859529
+  },
+  {
+    "id": "mv0er76g",
+    "name": "DTST",
+    "dir": "D:\\GitLab-DLLIN\\DTST-dev-v5.0\\dtst",
+    "cmd": "pnpm serve",
+    "port": 5177,
+    "stack": "Node.js",
+    "createdAt": 1791516646168
+  },
+  {
+    "id": "mv1pu5ik",
+    "name": "分层分群项目【HCP】",
+    "dir": "D:\\GitLab-DLLIN\\HCP\\hcp-ui",
+    "cmd": "pnpm serve",
+    "port": 5173,
+    "stack": "Vite",
+    "createdAt": 1791595725932
+  },
+  {
+    "id": "mumddw9t",
+    "name": "ADNSAP",
+    "dir": "D:\\GitLab-DLLIN\\_using_adnsap\\dsap-ui",
+    "cmd": "pnpm serve",
+    "port": 5175,
+    "stack": "Vite",
+    "createdAt": 1791615395893
+  },
+  {
+    "id": "mv25piu5",
+    "name": "江苏实验室项目",
+    "dir": "D:\\GitLab-DLLIN\\JS-SYS\\wggh\\wggh\\static",
+    "cmd": "内置静态托管（无需命令）",
+    "port": 5179,
+    "stack": "静态页面",
+    "createdAt": 1791622383773
+  }
+]

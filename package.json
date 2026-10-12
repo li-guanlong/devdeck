@@ -1,0 +1,70 @@
+{
+  "author": "GLNB",
+  "dependencies": {
+    "express": "^5.3.0"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  },
+  "description": "DevDeck · by GLNB —— 本机开发工作台：多 dev server 启停管理、端口发现、日志聚合",
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "main": "main.js",
+  "name": "devdeck",
+  "private": true,
+  "productName": "DevDeck",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "desktop": "electron .",
+    "verify-pack": "node scripts/verify-pack.js",
+    "dist": "electron-builder --win nsis",
+    "dist:verify": "electron-builder --win nsis && node scripts/verify-pack.js"
+  },
+  "version": "0.1.1",
+  "pnpm": {
+    "overrides": {
+      "@noble/hashes": "1.8.0"
+    }
+  },
+  "build": {
+    "appId": "com.glnb.devdeck",
+    "productName": "DevDeck",
+    "directories": {
+      "output": "release-new"
+    },
+    "files": [
+      "main.js",
+      "server.js",
+      "static-serve.js",
+      "preload.js",
+      "overlay-preload.js",
+      "public/**/*",
+      "assets/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "static-serve.js"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/favicon-512.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DevDeck",
+      "deleteAppDataOnUninstall": false
+    },
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    }
+  }
+}
