@@ -11,6 +11,7 @@
 - **日志聚合**：日志集中落 `DATA_DIR/logs/{id}.log`（源码版 `logs/`，EXE 版 `%APPDATA%\DevDeck\logs`，UTF-8），不再写进用户项目目录；看板看尾 80 行 + SSE 实时流，超 5MB 自动瘦身到 1MB；旧版项目目录 `.devdeck-*.log` 与 CMP 遗留 `.cmp-start*.log` 首次访问自动迁移。
 - **辅助诊断**：规则引擎（无 LLM）按日志画像 + 端口归属 + 进程树聚类输出 error/warn/info 结论卡，每条带可执行动作（启动 / 终止占用者 / 换端口 / 安装依赖 / 看日志）。
 - **桌面壳**：Electron 主窗口 + 托盘（关窗隐藏）+ 桌面悬浮卡 + 开机自启 + 原生目录选择；**单实例锁**防止双开抢端口。
+- **悬浮卡停靠**：拖到屏幕边缘（26px 内）自动吸附，停稳后缩成极简边缘条（鼠标穿透、不挡桌面）；鼠标靠近自动展开完整卡片，移开 0.5s 再缩回；支持左/右/上/下四条边与多屏。
 
 ## 快速开始
 
@@ -32,12 +33,13 @@ pnpm test          # node --test tests，每个测试文件独立子进程（推
 pnpm test:inproc   # 受限环境：公司电脑若禁止子进程/命名管道，用单进程顺序跑
 ```
 
-覆盖五层（共 30 个用例）：
+覆盖六层（共 40 个用例）：
 
 - `tests/sanitize.test.js` — 转义原语（`&`/`<`/`>`/引号、null 归一）
 - `tests/render-xss.test.js` — 把真实 `sanitize.js` + `app.js` 放进 vm，验证恶意项目配置渲染后不产生标签
 - `tests/request-guard.test.js` — 控制面 Host/Origin 校验（DNS rebinding、跨站请求）
 - `tests/store.test.js` — 配置原子写、`.bak` 回滚、坏 JSON 隔离
+- `tests/overlay-geometry.test.js` — 悬浮卡吸附判定、停靠条位置（含任务栏夹取）、悬停展开位置、多屏偏移
 - `tests/api.test.js` — 真实加载 `server.js`（`child_process` 打桩，不启动真实进程），验证 403 拦截、CRUD、导入合并、kill 白名单、启动命令下发、静态项目参数、spawn 失败兜底
 
 ## 打包分发（v1 流程）
@@ -109,13 +111,14 @@ pnpm run dist:verify   # 打包 + 自动验包，断言 app.asar.unpacked\static
 - 进程采样不再重复启动，`exec` 同步异常只记 `boot.log`，不影响服务启动
 - 测试增至 29 个用例（新增 `tests/store.test.js` 与 4 条 API 回归）
 
-## 0.1.2 / 0.1.3 变更（P2 运行时优化 + 悬浮卡修复，分支 fix/p2-runtime）
+## 0.1.2 / 0.1.3 / 0.1.4 变更（P2 运行时优化 + 悬浮卡，分支 fix/p2-runtime）
 
 - **日志迁出用户项目目录**：统一 `DATA_DIR/logs/{id}.log`，旧 `.devdeck-*.log` / `.cmp-start*.log` 首次访问自动搬运；孤儿日志保留 30 天
 - **托盘菜单状态实时**：每次重建菜单按 `overlayWin.isVisible()` 计算「悬浮卡片」勾选态，隐藏/显示后不再残留旧状态
 - **进程采样降频**：CIM 采样 5s → 15s，请求触发补采设 10s 下限，并避免上一轮未返回时叠加 PowerShell
 - **0.1.3 修复悬浮卡折叠高度**：实测非 resizable 的透明无边框窗口上 `setSize()` 是空操作，改用 `setBounds()`；折叠高度由渲染端按真实面板高度上报（不再写死），宽度固定设计值避免每次 +1px 漂移
-- 安装包版本 `0.1.3`
+- **0.1.4 悬浮卡边缘停靠**：拖到屏幕边缘 26px 内自动吸附，450ms 后缩成极简边缘条（竖条 32×120 / 横条 120×38，Windows 最小窗口限制），并开启鼠标穿透（`setIgnoreMouseEvents(..., {forward:true})`）不挡桌面；鼠标靠近由转发的 mousemove 触发展开，移开 0.5s 缩回；几何计算抽到 `lib/overlay-geometry.js` 并有单测
+- 安装包版本 `0.1.4`
 
 ## v1.0 变更
 

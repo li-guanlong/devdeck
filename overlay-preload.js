@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld('overlayAPI', {
   toast: (msg) => ipcRenderer.send('overlay:toast', msg),
   // 上报折叠/置顶状态（只传改动项，主进程合并后持久化）
   reportPos: (state) => ipcRenderer.send('overlay:state', state),
-  // 读取主进程持久化的状态：折叠/置顶以 overlay-state.json 为唯一真相
-  getState: () => ipcRenderer.invoke('overlay:get-state')
+  // 读取主进程持久化的状态：形态/折叠/置顶以主进程为准
+  getState: () => ipcRenderer.invoke('overlay:get-state'),
+  // 鼠标进入/离开窗口：极简条靠它触发"悬停展开 / 离开缩回"
+  hover: (inside) => ipcRenderer.send('overlay:hover', !!inside),
+  // 主进程通知形态变化：normal（完整卡片）/ docked（极简条）/ peek（停靠后展开）
+  onMode: (cb) => ipcRenderer.on('overlay:mode', (_e, m) => cb(m || {}))
 });

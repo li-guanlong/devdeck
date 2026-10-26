@@ -396,6 +396,49 @@
       opacity: 1;
       transform: translateX(-50%) translateY(0);
     }
+
+    /* ===== 极简停靠形态：贴边只剩一条窄条，鼠标靠近自动展开 ===== */
+    .dock-tab {
+      display: none;
+      position: fixed;
+      inset: 0;
+      -webkit-app-region: drag; /* 贴着边缘也能拖动换边 */
+    }
+
+    body.docked-ui #card { display: none; }
+
+    body.docked-ui .dock-tab { display: block; }
+
+    .dock-tab::before {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+      background: linear-gradient(180deg, #22d3ee, #a5b4fc);
+      box-shadow: 0 0 10px rgba(34, 211, 238, .55);
+      opacity: .8;
+      transition: opacity .18s, box-shadow .18s;
+    }
+
+    body.dock-left .dock-tab::before,
+    body.dock-right .dock-tab::before {
+      width: 5px;
+      height: 72%;
+    }
+
+    body.dock-top .dock-tab::before,
+    body.dock-bottom .dock-tab::before {
+      width: 72%;
+      height: 5px;
+      background: linear-gradient(90deg, #22d3ee, #a5b4fc);
+    }
+
+    .dock-tab:hover::before {
+      opacity: 1;
+      box-shadow: 0 0 16px rgba(34, 211, 238, .9);
+    }
   </style>
 </head>
 
@@ -420,6 +463,8 @@
       </div>
     </div>
   </div>
+
+  <div class="dock-tab" id="dockTab" title="DevDeck · 悬停展开" aria-hidden="true"></div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 

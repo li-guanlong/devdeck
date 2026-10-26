@@ -62,6 +62,26 @@
   function applyPinned() { $('pin').classList.toggle('on', pinned); $('pin').textContent = pinned ? '📌' : '📍'; }
   function pushState(patch) { try { if (window.overlayAPI && window.overlayAPI.reportPos) window.overlayAPI.reportPos(patch); } catch {} }
 
+  /* ===== 形态：normal（完整卡片）/ docked（贴边极简条）/ peek（停靠后悬停展开） ===== */
+  let mode = 'normal';
+  let dockEdge = null;
+  let insideWindow = false;
+
+  function applyMode(m) {
+    const st = m || {};
+    mode = st.mode || 'normal';
+    dockEdge = st.edge || null;
+    document.body.classList.toggle('docked-ui', mode === 'docked');
+    ['left', 'right', 'top', 'bottom'].forEach(e => document.body.classList.remove('dock-' + e));
+    if (mode === 'docked' && dockEdge) document.body.classList.add('dock-' + dockEdge);
+    // 停靠/展开态隐藏手动折叠按钮：那里的高度由停靠几何决定，折叠会打架
+    const t = $('toggle');
+    if (t) t.style.display = mode === 'normal' ? '' : 'none';
+    if (mode === 'normal') applyCollapsed();
+    else { card.classList.remove('collapsed'); if (t) t.textContent = '▾'; }
+    insideWindow = false; // 形态切换后重新判定鼠标是否在窗内（等下一次 mousemove/mouseenter）
+  }
+
   // 折叠后主进程要把窗口缩到"刚好包住头部"。写死高度会随字体/DPI 出现留白或裁切，
   // 所以在折叠态实测面板高度（加 #card 的上下 padding）报给主进程。
   function measureCollapsedHeight() {
@@ -75,6 +95,7 @@
   }
 
   $('toggle').addEventListener('click', () => {
+    if (mode !== 'normal') return; // 停靠/展开态不响应手动折叠
     collapsed = !collapsed;
     applyCollapsed();
     // 折叠：带上实测高度；展开：交给主进程用设计高度 400
@@ -90,16 +111,31 @@
 
   // 启动时从主进程读一次：避免"按钮显示未置顶、窗口实际置顶"这类错位
   (async function initOverlayState() {
+    let st = null;
     try {
-      const st = (window.overlayAPI && window.overlayAPI.getState) ? await window.overlayAPI.getState() : null;
+      st = (window.overlayAPI && window.overlayAPI.getState) ? await window.overlayAPI.getState() : null;
       if (st && typeof st.collapsed === 'boolean') collapsed = st.collapsed;
       if (st && typeof st.pinned === 'boolean') pinned = st.pinned;
     } catch {}
-    applyCollapsed();
     applyPinned();
-    // 启动就是折叠态时，把实测高度补报一次，避免主进程用默认高度留下多余透明边
-    if (collapsed) pushState({ collapsed: true, height: measureCollapsedHeight() });
+    applyMode(st || { mode: 'normal' }); // 形态以主进程为准（可能是启动即停靠）
+    // 只有普通形态需要把实测折叠高度补报给主进程
+    if (collapsed && mode === 'normal') pushState({ collapsed: true, height: measureCollapsedHeight() });
   })();
+
+  // 主进程形态变更：吸附停靠 / 悬停展开 / 退出停靠
+  if (window.overlayAPI && overlayAPI.onMode) overlayAPI.onMode(applyMode);
+
+  // 鼠标进入/离开窗口：极简条靠它"靠近即展开、离开即缩回"
+  function reportHover(v) {
+    if (v === insideWindow) return;
+    insideWindow = v;
+    try { if (window.overlayAPI && overlayAPI.hover) overlayAPI.hover(v); } catch {}
+  }
+  document.addEventListener('mouseenter', () => reportHover(true));
+  document.addEventListener('mouseleave', () => reportHover(false));
+  // 窗口在原地缩放/形态切换时不会补发 mouseenter，用 mousemove 兜底
+  document.addEventListener('mousemove', () => reportHover(true), { passive: true });
 
   /* ===== 隐藏 ===== */
   $('close').addEventListener('click', () => { if (window.overlayAPI) window.overlayAPI.hide(); });
