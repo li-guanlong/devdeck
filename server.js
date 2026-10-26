@@ -28,11 +28,21 @@ const NCPU = (os.cpus() || []).length || 1;
 // 一条 Get-CimInstance 拿全：pid / 命令行 / 内存 / 内核+用户 CPU 时间（100ns）；CPU% 用两次快照差分。
 let nodeProcs = new Map(); // pid -> { command, memMB, cpu }
 let nodeProcPrev = null; // { t, map: pid -> cpuSec }
+// 采样降频：每次采样都要起一个 PowerShell（约数百 ms CPU），空闲 15s 一次足够；
+// 有请求时最多每 10s 补采一次，保证看板刷新/诊断拿到的新鲜度，同时不回到"每 5s 起一次"的开销。
+const SAMPLE_INTERVAL_MS = 15000;
+const SAMPLE_MIN_GAP_MS = 10000;
+let sampleInflight = false;
+let lastSampleAt = 0;
 function sampleNodeProcs() {
   if (process.platform !== 'win32') return;
+  if (sampleInflight) return; // 上一轮 CIM 还没回来，别叠加进程
+  sampleInflight = true;
+  lastSampleAt = Date.now();
   try {
     exec('powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \'node.exe\' -or ($_.CommandLine -and $_.CommandLine.Contains(\'static-serve.js\')) } | Select-Object ProcessId,CommandLine,WorkingSetSize,KernelModeTime,UserModeTime | ConvertTo-Json -Compress -Depth 2"',
       { timeout: 8000, maxBuffer: 4 * 1024 * 1024 }, (e, out) => {
+        sampleInflight = false;
         try {
           if (e || !out) return;
           const now = Date.now(), cur = new Map(), cpuSec = {};
@@ -56,12 +66,14 @@ function sampleNodeProcs() {
         } catch {}
       });
   } catch (e) {
+    sampleInflight = false;
     // 同步抛错（被安全软件拦截 / PowerShell 被策略禁用 / EPERM）不能让整个服务起不来
     try { fs.appendFileSync(BOOT_LOG, `${new Date().toISOString()} SAMPLE FAIL ${e && e.message}\n`); } catch {}
   }
 }
+function ensureFreshSample() { if (Date.now() - lastSampleAt >= SAMPLE_MIN_GAP_MS) sampleNodeProcs(); }
 sampleNodeProcs();
-setInterval(sampleNodeProcs, 5000);
+setInterval(sampleNodeProcs, SAMPLE_INTERVAL_MS);
 
 let cachedIps = [];
 let cachedIpsAt = 0;
@@ -141,6 +153,7 @@ function extractName(cmd) {
 
 // ===================== 运行中服务发现 =====================
 async function buildNodeServices() {
+  ensureFreshSample(); // 看板轮询触发补采（受 10s 最小间隔约束）
   try {
     const netstatMap = await getListeningPortsCached();
     if (!netstatMap || netstatMap.size === 0) return { services: [], localIps: localIps() };
@@ -523,18 +536,33 @@ const LOG_MAX_BYTES = 5 * 1024 * 1024;
 const LOG_KEEP_BYTES = 1 * 1024 * 1024;
 const LOG_TAIL_BYTES = 64 * 1024;
 const LOG_CLEAN_MS = 10 * 60 * 1000;
+// 日志不再写进用户项目目录（避免污染业务仓库 / 触发它们的 git 状态）：
+// 统一放 DATA_DIR/logs（源码版=仓库 logs/，EXE=userData/logs），旧位置首次访问时自动迁移。
+const LOG_DIR = path.join(DATA_DIR, 'logs');
+function ensureLogDir() { try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {} }
+ensureLogDir();
 
 function logPathFor(item) {
-  const safe = String(item.id || 'x').replace(/[^a-zA-Z0-9_-]/g, '');
-  return path.join(item.dir, `.devdeck-${safe}.log`);
+  const safe = String(item.id || 'x').replace(/[^a-zA-Z0-9_-]/g, '') || 'x';
+  return path.join(LOG_DIR, `${safe}.log`);
 }
 function migrateLegacyLog(item) {
-  // CMP 遗留日志（.cmp-start.log / .cmp-start-{id}.log）自动迁移到新命名
+  // 旧版日志在项目目录：.devdeck-{id}.log（本工具）与 .cmp-start*.log（CMP 遗留），首次访问时搬到 LOG_DIR
   try {
-    const safe = String(item.id || 'x').replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!item || !item.dir) return;
+    ensureLogDir();
     const cur = logPathFor(item);
-    for (const legacy of [path.join(item.dir, '.cmp-start.log'), path.join(item.dir, `.cmp-start-${safe}.log`)]) {
-      if (legacy !== cur && fs.existsSync(legacy) && !fs.existsSync(cur)) { fs.renameSync(legacy, cur); break; }
+    if (fs.existsSync(cur)) return;
+    const safe = String(item.id || 'x').replace(/[^a-zA-Z0-9_-]/g, '') || 'x';
+    const cands = [
+      path.join(item.dir, `.devdeck-${safe}.log`),
+      path.join(item.dir, '.cmp-start.log'),
+      path.join(item.dir, `.cmp-start-${safe}.log`)
+    ];
+    for (const legacy of cands) {
+      try {
+        if (legacy !== cur && fs.existsSync(legacy)) { fs.renameSync(legacy, cur); return; }
+      } catch {}
     }
   } catch {}
 }
@@ -578,11 +606,17 @@ async function trimLog(file) {
 }
 async function cleanLogs() {
   const items = loadCustom();
-  await Promise.all(items.map(async (i) => {
-    const log = logPathFor(i);
-    if (!fs.existsSync(i.dir)) { try { await fs.promises.unlink(log); } catch {} return; }
-    await trimLog(log);
-  }));
+  await Promise.all(items.map(async (i) => { await trimLog(logPathFor(i)); }));
+  // 孤儿日志（项目已删除）保留 30 天后清理；日志已集中存放，不再需要靠删日志腾项目目录
+  try {
+    const keep = new Set(items.map(i => path.basename(logPathFor(i))));
+    for (const f of await fs.promises.readdir(LOG_DIR)) {
+      if (!/\.log$/i.test(f) || keep.has(f)) continue;
+      const fp = path.join(LOG_DIR, f);
+      const st = await fs.promises.stat(fp).catch(() => null);
+      if (st && Date.now() - st.mtimeMs > 30 * 24 * 3600 * 1000) await fs.promises.unlink(fp).catch(() => {});
+    }
+  } catch {}
 }
 setTimeout(cleanLogs, 30 * 1000);
 setInterval(cleanLogs, LOG_CLEAN_MS);
@@ -590,6 +624,7 @@ setInterval(cleanLogs, LOG_CLEAN_MS);
 app.get('/api/start-log', async (req, res) => {
   const item = loadCustom().find(x => x.id === req.query.id);
   if (!item) return res.status(404).json({ error: '项目不存在' });
+  migrateLegacyLog(item); // 旧版日志在项目目录，先搬过来再读
   const log = logPathFor(item);
   if (!fs.existsSync(log)) return res.json({ exists: false, lines: [], hint: '还没有日志：命令可能尚未执行，或进程启动即退出。请先点"启动"。' });
   try {
@@ -602,6 +637,7 @@ app.get('/api/start-log', async (req, res) => {
 app.get('/api/start-log/stream', async (req, res) => {
   const item = loadCustom().find(x => x.id === req.query.id);
   if (!item) { res.status(404).end(); return; }
+  migrateLegacyLog(item);
   const log = logPathFor(item);
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -737,6 +773,7 @@ app.get('/api/browse-dir', (req, res) => {
 // ===================== 辅助诊断（规则引擎，不依赖 LLM：日志尾部 + 端口 + 进程） =====================
 app.post('/api/diagnose', async (req, res) => {
   try {
+    ensureFreshSample(); // 诊断结论依赖最新的进程/端口画像
     const { id } = req.body || {};
     const item = loadCustom().find(x => x.id === id);
     if (!item) return res.status(404).json({ error: '项目不存在' });
@@ -944,6 +981,7 @@ app.post('/api/install-deps', async (req, res) => {
     else if (fs.existsSync(path.join(item.dir, 'package-lock.json'))) pm = 'npm';
     else if (fs.existsSync(path.join(item.dir, 'bun.lockb'))) pm = 'bun';
     const log = logPathFor(item);
+    ensureLogDir();
     try { fs.appendFileSync(log, `\n[devdeck] ${new Date().toLocaleString('zh-CN', { hour12: false })} 开始 ${pm} install\n`); } catch {}
     if (process.platform === 'win32') {
       const fullCmd = `chcp 65001 >nul && ${pm} install >> "${log}" 2>&1`;

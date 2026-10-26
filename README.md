@@ -8,7 +8,7 @@
 - **运行中服务发现**：`netstat -ano` + CIM 进程快照（含 CPU 差分、内存），自动圈定 node 服务与静态托管进程，展示监听端口与局域网 URL。
 - **静态页面托管**：无 `package.json` 的纯 HTML 目录（如大屏）走内置 `static-serve.js` 托管，需配置端口；源码版用系统 Node，EXE 版用内置 Node（`ELECTRON_RUN_AS_NODE`）。
 - **端口治理**：启动前判占（409 + 占用者说明）、自动推荐空闲端口、一键换端口重启；`vue-cli-service` 只走 `PORT/HOST` 环境变量，Turbo 透传 `-- -- --port --strictPort --host`。
-- **日志聚合**：各项目日志落 `启动目录/.devdeck-{id}.log`（UTF-8），看板看尾 80 行 + SSE 实时流，超 5MB 自动瘦身到 1MB；CMP 遗留 `.cmp-start*.log` 首次启动自动迁移。
+- **日志聚合**：日志集中落 `DATA_DIR/logs/{id}.log`（源码版 `logs/`，EXE 版 `%APPDATA%\DevDeck\logs`，UTF-8），不再写进用户项目目录；看板看尾 80 行 + SSE 实时流，超 5MB 自动瘦身到 1MB；旧版项目目录 `.devdeck-*.log` 与 CMP 遗留 `.cmp-start*.log` 首次访问自动迁移。
 - **辅助诊断**：规则引擎（无 LLM）按日志画像 + 端口归属 + 进程树聚类输出 error/warn/info 结论卡，每条带可执行动作（启动 / 终止占用者 / 换端口 / 安装依赖 / 看日志）。
 - **桌面壳**：Electron 主窗口 + 托盘（关窗隐藏）+ 桌面悬浮卡 + 开机自启 + 原生目录选择；**单实例锁**防止双开抢端口。
 
@@ -32,7 +32,7 @@ pnpm test          # node --test tests，每个测试文件独立子进程（推
 pnpm test:inproc   # 受限环境：公司电脑若禁止子进程/命名管道，用单进程顺序跑
 ```
 
-覆盖五层（共 29 个用例）：
+覆盖五层（共 30 个用例）：
 
 - `tests/sanitize.test.js` — 转义原语（`&`/`<`/`>`/引号、null 归一）
 - `tests/render-xss.test.js` — 把真实 `sanitize.js` + `app.js` 放进 vm，验证恶意项目配置渲染后不产生标签
@@ -55,8 +55,8 @@ pnpm run dist:verify   # 打包 + 自动验包，断言 app.asar.unpacked\static
 
 | 项 | 位置 | 说明 |
 |---|---|---|
-| 项目配置 | 源码 `devdeck.json` / EXE `%APPDATA%\DevDeck\devdeck.json` | `POST /api/config/import` 按 id+目录去重合并 |
-| 运行日志 | 各项目目录 `.devdeck-{id}.log` | 10 分钟瘦身扫描，`DELETE /api/start-log` 清零 |
+| 项目配置 | 源码 `devdeck.json` / EXE `%APPDATA%\DevDeck\devdeck.json` | 原子写 + `.bak`，坏文件隔离为 `devdeck.corrupt-*.json`；`POST /api/config/import` 按 id+目录去重合并 |
+| 运行日志 | 源码 `logs/` / EXE `%APPDATA%\DevDeck\logs\{id}.log` | 10 分钟瘦身扫描，`DELETE /api/start-log` 清零；孤儿日志保留 30 天 |
 | 诊断日志 | `%TEMP%\devdeck-boot.log` | 桌面壳启动/端口/异常 |
 | 悬浮卡状态 | EXE userData `overlay-state.json` / 开发 `%TEMP%` | 位置/置顶/折叠记忆 |
 
@@ -108,6 +108,13 @@ pnpm run dist:verify   # 打包 + 自动验包，断言 app.asar.unpacked\static
 - 默认端口统一为 `3300`（与 README / 页面提示一致，`PORT` 环境变量仍可覆盖）
 - 进程采样不再重复启动，`exec` 同步异常只记 `boot.log`，不影响服务启动
 - 测试增至 29 个用例（新增 `tests/store.test.js` 与 4 条 API 回归）
+
+## 0.1.2 变更（P2 运行时优化，分支 fix/p2-runtime）
+
+- **日志迁出用户项目目录**：统一 `DATA_DIR/logs/{id}.log`，旧 `.devdeck-*.log` / `.cmp-start*.log` 首次访问自动搬运；孤儿日志保留 30 天
+- **托盘菜单状态实时**：每次重建菜单按 `overlayWin.isVisible()` 计算「悬浮卡片」勾选态，隐藏/显示后不再残留旧状态
+- **进程采样降频**：CIM 采样 5s → 15s，请求触发补采设 10s 下限，并避免上一轮未返回时叠加 PowerShell
+- 安装包版本 `0.1.2`
 
 ## v1.0 变更
 

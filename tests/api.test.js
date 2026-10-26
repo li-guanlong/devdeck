@@ -207,6 +207,22 @@ test('启动目录不存在：直接 500 可读错误，不尝试 spawn', async 
   assert.equal(spawned.length, before, '目录不存在时不应调用 spawn');
 });
 
+test('运行日志：项目目录旧日志迁移到 DATA_DIR/logs', async () => {
+  const created = await request('POST', '/api/custom-projects', {
+    headers: loopback(),
+    body: { name: '日志迁移', dir: dataDir, cmd: 'pnpm dev' }
+  });
+  assert.equal(created.status, 200);
+  const legacy = path.join(dataDir, '.cmp-start.log');
+  fs.writeFileSync(legacy, 'hello-from-cmp\n');
+  const r = await request('GET', '/api/start-log?id=' + encodeURIComponent(created.json.id), { headers: loopback() });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.exists, true);
+  assert.match(r.json.lines.join('\n'), /hello-from-cmp/);
+  assert.ok(!fs.existsSync(legacy), '旧日志应被移走，不再留在项目目录');
+  assert.ok(fs.existsSync(path.join(dataDir, 'logs', created.json.id + '.log')), '日志应落在 DATA_DIR/logs');
+});
+
 test('默认端口与文档一致（3300）', () => {
   assert.equal(PORT, 3300);
 });

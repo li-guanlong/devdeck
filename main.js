@@ -19,6 +19,7 @@ else {
   app.on('second-instance', () => {
     try { if (overlayWin && !overlayWin.isDestroyed()) overlayWin.show(); } catch {}
     try { if (win && !win.isDestroyed()) { win.show(); win.focus(); } } catch {}
+    refreshTrayMenu();
   });
 }
 
@@ -104,7 +105,7 @@ function registerOverlayIpc() {
     if (overlayWin && !overlayWin.isDestroyed()) overlayWin.setAlwaysOnTop(!!on, 'floating');
     saveOverlayState({ ...loadOverlayState(), pinned: !!on });
   });
-  ipcMain.on('overlay:hide', () => { if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide(); });
+  ipcMain.on('overlay:hide', () => { if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide(); refreshTrayMenu(); });
   ipcMain.on('overlay:open-external', (_e, url) => { if (typeof url === 'string' && /^https?:\/\//.test(url)) shell.openExternal(url); });
   ipcMain.on('overlay:toast', (_e, msg) => { try { if (win && !win.isDestroyed()) win.webContents.send('overlay-toast', String(msg)); } catch {} });
   // 只合并传来的字段：悬浮卡只发改动项，避免把另一项误写成 false（旧版把 pinned/collapsed 都强制布尔化）
@@ -168,30 +169,38 @@ ipcMain.handle('pick-dir', async () => {
   } catch (e) { bootLog('PICK-DIR ERR ' + (e && e.message)); return null; }
 });
 
+// 托盘菜单每项都按当前真实状态生成：勾选态不能在建菜单时定死（隐藏悬浮卡后要能同步）
+function trayMenuTemplate() {
+  return [
+    { label: '显示主窗口', click: () => { if (win && !win.isDestroyed()) win.show(); } },
+    {
+      label: '悬浮卡片',
+      type: 'checkbox',
+      checked: !!(overlayWin && !overlayWin.isDestroyed() && overlayWin.isVisible()),
+      click: (mi) => {
+        if (!overlayWin || overlayWin.isDestroyed()) createOverlay();
+        if (mi.checked) { overlayWin.show(); overlayWin.focus(); }
+        else overlayWin.hide();
+        refreshTrayMenu(); // 隐藏/显示后重算勾选态
+      }
+    },
+    { label: '开机自启', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: (mi) => { app.setLoginItemSettings({ openAtLogin: mi.checked }); refreshTrayMenu(); } },
+    { type: 'separator' },
+    { label: '退出', click: () => { isQuiting = true; app.quit(); } }
+  ];
+}
+function refreshTrayMenu() {
+  if (!tray) return;
+  try { tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate())); } catch {}
+}
 function createTray() {
   const { nativeImage } = require('electron');
   let img = nativeImage.createFromPath(APP_ICON);
   if (img.isEmpty()) img = nativeImage.createEmpty();
   tray = new Tray(img);
   tray.setToolTip('DevDeck · by GLNB');
-  const ctx = Menu.buildFromTemplate([
-    { label: '显示主窗口', click: () => { if (win) win.show(); } },
-    {
-      label: '悬浮卡片',
-      type: 'checkbox',
-      checked: !!(overlayWin && overlayWin.isVisible()),
-      click: (mi) => {
-        if (!overlayWin) createOverlay();
-        if (mi.checked) { overlayWin.show(); overlayWin.focus(); }
-        else overlayWin.hide();
-      }
-    },
-    { label: '开机自启', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: (mi) => { app.setLoginItemSettings({ openAtLogin: mi.checked }); } },
-    { type: 'separator' },
-    { label: '退出', click: () => { isQuiting = true; app.quit(); } }
-  ]);
-  tray.setContextMenu(ctx);
-  tray.on('double-click', () => { if (win) win.show(); });
+  refreshTrayMenu();
+  tray.on('double-click', () => { if (win && !win.isDestroyed()) win.show(); });
 }
 
 async function waitForServer(tries = 60) {
@@ -225,6 +234,7 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   createOverlay(); // 桌面悬浮卡片（默认显示）
+  refreshTrayMenu(); // 悬浮卡实际可见后再校正一次托盘勾选态
   if (!ok && win) win.webContents.executeJavaScript(`document.body.insertAdjacentHTML('afterbegin','<div style="background:#7f1d1d;color:#fff;padding:8px;text-align:center;font-size:12px">内置服务启动超时</div>')`).catch(() => {});
 });
 

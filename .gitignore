@@ -1,5 +1,7 @@
 node_modules/
 *.log
+# 源码版日志目录（EXE 版在 userData/logs）
+logs/
 # electron-builder 产物（112MB+，不进仓库；.icon-ico 缓存很小，留着加速二次打包）
 release/win-unpacked/
 release-new/
