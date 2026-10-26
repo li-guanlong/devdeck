@@ -90,13 +90,33 @@ function createWindow() {
   win.on('resize', () => { setMoving(true); clearTimeout(moveTimer); moveTimer = setTimeout(() => setMoving(false), 350); });
 }
 
-// 折叠/展开时同步窗口高度：透明窗口不会让点击穿透，不缩窗会一直挡着桌面
+// 折叠/展开时同步窗口高度：透明窗口不会让点击穿透，不缩窗会一直挡着桌面。
+// 踩坑记录（Windows 实测）：非 resizable 的透明无边框窗口上 setSize() 是空操作，
+// 必须用 setBounds()；且系统会给这类窗口 +1px，所以比较要留容差，否则会反复重设。
+function setOverlayHeight(h) {
+  if (!overlayWin || overlayWin.isDestroyed()) return;
+  const b = overlayWin.getBounds();
+  // 宽度用设计常量：透明窗口的 getBounds() 会带 1px 虚边，回写 b.width 会让窗口每折叠一次就宽 1px
+  const target = { x: b.x, y: b.y, width: OVERLAY_W, height: Math.max(48, Math.round(h)) };
+  const widthOk = Math.abs(b.width - OVERLAY_W) <= 2; // 见下：透明窗口实测会 +1px，留容差
+  if (widthOk && Math.abs(b.height - target.height) <= 2) return;
+  try { overlayWin.setBounds(target); } catch {}
+  // 兜底：极端环境（某些 DPI/主题）仍拦 setBounds 时，临时放开 resizable 再设
+  if (Math.abs(overlayWin.getBounds().height - target.height) > 2) {
+    try {
+      const was = overlayWin.isResizable();
+      overlayWin.setResizable(true);
+      overlayWin.setBounds(target);
+      overlayWin.setResizable(was);
+    } catch {}
+  }
+  bootLog(`OVERLAY HEIGHT ${b.height} -> ${overlayWin.getBounds().height} (target ${target.height})`);
+}
+
 function applyOverlayCollapsed() {
   if (!overlayWin || overlayWin.isDestroyed()) return;
   const st = loadOverlayState();
-  const [w, h] = overlayWin.getSize();
-  const want = st.collapsed ? OVERLAY_COLLAPSED_H : OVERLAY_H;
-  if (h !== want) overlayWin.setSize(w, want);
+  setOverlayHeight(st.collapsed ? OVERLAY_COLLAPSED_H : OVERLAY_H);
 }
 
 // IPC 只注册一次：重复 createOverlay 不再叠加监听器
@@ -114,7 +134,14 @@ function registerOverlayIpc() {
     if (s && typeof s.collapsed === 'boolean') next.collapsed = s.collapsed;
     if (s && typeof s.pinned === 'boolean') next.pinned = s.pinned;
     saveOverlayState(next);
-    if (s && typeof s.collapsed === 'boolean') applyOverlayCollapsed();
+    if (s && typeof s.collapsed === 'boolean') {
+      // 渲染端会带上实测折叠高度（panel 实际高度 + 卡片上下 padding），比写死 68 更贴合字体/DPI
+      const measured = Number(s.height);
+      const h = s.collapsed
+        ? (Number.isFinite(measured) && measured >= 48 ? Math.min(measured, OVERLAY_H) : OVERLAY_COLLAPSED_H)
+        : OVERLAY_H;
+      setOverlayHeight(h);
+    }
     if (overlayWin && !overlayWin.isDestroyed()) overlayWin.setAlwaysOnTop(!!next.pinned, 'floating');
   });
   // 悬浮卡启动时读主进程状态：折叠/置顶以 overlay-state.json 为唯一真相

@@ -109,12 +109,13 @@ pnpm run dist:verify   # 打包 + 自动验包，断言 app.asar.unpacked\static
 - 进程采样不再重复启动，`exec` 同步异常只记 `boot.log`，不影响服务启动
 - 测试增至 29 个用例（新增 `tests/store.test.js` 与 4 条 API 回归）
 
-## 0.1.2 变更（P2 运行时优化，分支 fix/p2-runtime）
+## 0.1.2 / 0.1.3 变更（P2 运行时优化 + 悬浮卡修复，分支 fix/p2-runtime）
 
 - **日志迁出用户项目目录**：统一 `DATA_DIR/logs/{id}.log`，旧 `.devdeck-*.log` / `.cmp-start*.log` 首次访问自动搬运；孤儿日志保留 30 天
 - **托盘菜单状态实时**：每次重建菜单按 `overlayWin.isVisible()` 计算「悬浮卡片」勾选态，隐藏/显示后不再残留旧状态
 - **进程采样降频**：CIM 采样 5s → 15s，请求触发补采设 10s 下限，并避免上一轮未返回时叠加 PowerShell
-- 安装包版本 `0.1.2`
+- **0.1.3 修复悬浮卡折叠高度**：实测非 resizable 的透明无边框窗口上 `setSize()` 是空操作，改用 `setBounds()`；折叠高度由渲染端按真实面板高度上报（不再写死），宽度固定设计值避免每次 +1px 漂移
+- 安装包版本 `0.1.3`
 
 ## v1.0 变更
 

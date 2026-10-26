@@ -62,10 +62,24 @@
   function applyPinned() { $('pin').classList.toggle('on', pinned); $('pin').textContent = pinned ? '📌' : '📍'; }
   function pushState(patch) { try { if (window.overlayAPI && window.overlayAPI.reportPos) window.overlayAPI.reportPos(patch); } catch {} }
 
+  // 折叠后主进程要把窗口缩到"刚好包住头部"。写死高度会随字体/DPI 出现留白或裁切，
+  // 所以在折叠态实测面板高度（加 #card 的上下 padding）报给主进程。
+  function measureCollapsedHeight() {
+    try {
+      const panel = document.querySelector('#card .panel');
+      if (!panel) return 0;
+      const cs = getComputedStyle(card);
+      const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      return Math.ceil(panel.getBoundingClientRect().height + pad + 1); // +1：Windows 会再补 1px
+    } catch { return 0; }
+  }
+
   $('toggle').addEventListener('click', () => {
     collapsed = !collapsed;
     applyCollapsed();
-    pushState({ collapsed }); // 主进程据此同步窗口高度
+    // 折叠：带上实测高度；展开：交给主进程用设计高度 400
+    if (collapsed) pushState({ collapsed, height: measureCollapsedHeight() });
+    else pushState({ collapsed });
   });
   $('pin').addEventListener('click', () => {
     pinned = !pinned;
@@ -83,6 +97,8 @@
     } catch {}
     applyCollapsed();
     applyPinned();
+    // 启动就是折叠态时，把实测高度补报一次，避免主进程用默认高度留下多余透明边
+    if (collapsed) pushState({ collapsed: true, height: measureCollapsedHeight() });
   })();
 
   /* ===== 隐藏 ===== */
