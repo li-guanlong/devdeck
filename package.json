@@ -20,6 +20,8 @@
     "dev": "node server.js",
     "start": "node server.js",
     "desktop": "electron .",
+    "test": "node --test tests",
+    "test:inproc": "node scripts/run-tests.js",
     "verify-pack": "node scripts/verify-pack.js",
     "dist": "electron-builder --win nsis",
     "dist:verify": "electron-builder --win nsis && node scripts/verify-pack.js"
@@ -42,6 +44,7 @@
       "static-serve.js",
       "preload.js",
       "overlay-preload.js",
+      "lib/**/*",
       "public/**/*",
       "assets/**/*",
       "package.json",

@@ -6,8 +6,12 @@ const { exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { createRequestGuard } = require('./lib/request-guard');
 
 const app = express();
+app.disable('x-powered-by');
+// 安全：控制面 API 能启停进程并执行项目启动命令，先校验 Host/Origin（挡 DNS rebinding 与跨站请求），再解析请求体
+app.use(createRequestGuard());
 app.use(express.json());
 const PORT = Number(process.env.PORT) || 3030;
 const DATA_DIR = process.env.DEVDECK_DATA_DIR || __dirname;
@@ -943,15 +947,20 @@ let server = null;
 sampleNodeProcs();
 // 安全：控制面只绑回环地址。同机前端/Electron 走 localhost；页面上平铺的局域网 URL 是各 dev server
 // 自带的监听地址（手机可访问），DevDeck 自身的 kill/log/配置 API 不再暴露给同网段。如需远程管理请走 SSH 端口转发。
-server = app.listen(PORT, '127.0.0.1', () => {
-  console.log(`DevDeck 已启动：http://127.0.0.1:${PORT}（仅本机可访问）`);
-  try { fs.appendFileSync(BOOT_LOG, `${new Date().toISOString()} LISTEN ${PORT}\n`); } catch {}
-});
-server.on('error', (e) => {
-  if (e && e.code === 'EADDRINUSE') {
-    console.error(`端口 ${PORT} 已被占用。`);
-    if (!process.versions.electron) process.exit(1);
-    return;
-  }
-  throw e;
-});
+// 测试用：DEVDECK_NO_LISTEN=1 时只导出 app，由测试自己 listen(0) 拿随机端口。
+if (process.env.DEVDECK_NO_LISTEN !== '1') {
+  server = app.listen(PORT, '127.0.0.1', () => {
+    console.log(`DevDeck 已启动：http://127.0.0.1:${PORT}（仅本机可访问）`);
+    try { fs.appendFileSync(BOOT_LOG, `${new Date().toISOString()} LISTEN ${PORT}\n`); } catch {}
+  });
+  server.on('error', (e) => {
+    if (e && e.code === 'EADDRINUSE') {
+      console.error(`端口 ${PORT} 已被占用。`);
+      if (!process.versions.electron) process.exit(1);
+      return;
+    }
+    throw e;
+  });
+}
+
+module.exports = { app };

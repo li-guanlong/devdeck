@@ -1,4 +1,6 @@
 // DevDeck · by GLNB —— 前端：运行中服务 + 本地项目（无监控图表、无轮询重采样，10s 拉一次服务列表）
+// 安全：项目名/目录/命令/进程命令行都来自配置或操作系统，进 HTML 前必须经 DDSafe 转义。
+const { escapeHtml: escHtml, escapeAttr: escAttr } = window.DDSafe;
 function switchTab(t) {
   const run = t === 'run';
   document.getElementById('tabRun').classList.toggle('on', run); document.getElementById('tabCustom').classList.toggle('on', !run);
@@ -18,11 +20,10 @@ function stackCls(st) {
   if (s.includes('node')) return 'tag node';
   return 'tag';
 }
-function svcOps(s) {
-  const nm = (s.name || '').replace(/'/g, '');
-  let html = '<button class="btn btn-red" onclick="killService(' + s.pid + ',\'' + nm + '\',this)">终止</button>';
-  const m = matchLocal(s);
-  if (m) html += ' <button class="btn btn-blue" onclick="restartService(' + s.pid + ',\'' + m.id + '\',\'' + nm + '\',this)" title="先终止再按本地项目「' + (m.name || '').replace(/"/g, '&quot;') + '」配置重新启动">🔄 重启</button>';
+function svcOps(s, m) {
+  const name = escAttr(dispName(s));
+  let html = `<button class="btn btn-red" data-act="kill" data-pid="${escAttr(s.pid)}" data-name="${name}">终止</button>`;
+  if (m) html += ` <button class="btn btn-blue" data-act="restart" data-pid="${escAttr(s.pid)}" data-id="${escAttr(m.id)}" data-name="${name}" title="先终止再按本地项目「${escAttr(m.name)}」配置重新启动">🔄 重启</button>`;
   return html;
 }
 /* 运行中服务 ↔ 本地项目匹配：命中则优先显示本地项目名称 */
@@ -61,27 +62,39 @@ function updateNodeServices(data) {
       const all = (s.urls || []).filter(u => u.includes(':' + p + '/'));
       const main = all.find(u => u.includes('localhost')) || all[0];
       const lans = all.filter(u => u !== main);
-      return `<div class="svc-port-grp"><span class="svc-port-tag">:${p}</span>` +
-        (main ? `<a class="addr main" href="${main}" target="_blank" rel="noopener" title="${main}">${main.replace(/^http:\/\//, '').replace(/\/$/, '')} ↗</a>` : '') +
-        lans.map(u => `<a class="addr" href="${u}" target="_blank" rel="noopener" title="${u}">${u.replace(/^http:\/\//, '').replace(/\/$/, '')} ↗</a>`).join('') + `</div>`;
+      const label = u => escHtml(u.replace(/^http:\/\//, '').replace(/\/$/, ''));
+      return `<div class="svc-port-grp"><span class="svc-port-tag">:${escHtml(p)}</span>` +
+        (main ? `<a class="addr main" href="${escAttr(main)}" target="_blank" rel="noopener" title="${escAttr(main)}">${label(main)} ↗</a>` : '') +
+        lans.map(u => `<a class="addr" href="${escAttr(u)}" target="_blank" rel="noopener" title="${escAttr(u)}">${label(u)} ↗</a>`).join('') + `</div>`;
     }).join('');
-    const nm = dispName(s);
-    return `<div class="svc-card" title="${(s.command || '').replace(/"/g, '&quot;')}">
-  <input type="checkbox" class="selbox" data-spid="${s.pid}" ${svcSel.has(s.pid) ? 'checked' : ''} onchange="syncSvcSel()"><div class="svc-idx">${i + 1}</div>
-  <div class="svc-name"><b>${nm}</b><div class="pid">PID ${s.pid}${nm !== s.name ? ' · ' + s.name : ''}</div></div>
-  <div class="svc-meta"><div class="m">内存 <b>${s.mem}M</b></div><div class="m">CPU <b>${s.cpu}%</b></div></div>
+    const nmRaw = String(dispName(s) || '');
+    const m = matchLocal(s);
+    return `<div class="svc-card" title="${escAttr(s.command || '')}">
+  <input type="checkbox" class="selbox" data-spid="${escAttr(s.pid)}" ${svcSel.has(s.pid) ? 'checked' : ''}><div class="svc-idx">${i + 1}</div>
+  <div class="svc-name"><b>${escHtml(nmRaw)}</b><div class="pid">PID ${escHtml(s.pid)}${nmRaw !== s.name ? ' · ' + escHtml(s.name) : ''}</div></div>
+  <div class="svc-meta"><div class="m">内存 <b>${escHtml(s.mem)}M</b></div><div class="m">CPU <b>${escHtml(s.cpu)}%</b></div></div>
   <div class="svc-urls">${groups || '<span style="color:var(--mut)">—</span>'}</div>
-  <div class="svc-ops"><span class="${stackCls(s.stack)}">${s.stack}</span>  ${svcOps(s)}</div></div>`;
+  <div class="svc-ops"><span class="${stackCls(s.stack)}">${escHtml(s.stack)}</span>  ${svcOps(s, m)}</div></div>`;
   }).join('');
+  bindSvcActions();
   paintCustomStatus(list);
   for (const p of [...svcSel]) { if (!list.some(x => x.pid === p)) svcSel.delete(p); }
   syncSvcSel();
+}
+/* 卡片重渲染后统一绑事件：动态 HTML 里不再拼 onclick，避免把外部字符串当代码执行 */
+function bindSvcActions() {
+  document.querySelectorAll('#paneRun .selbox').forEach(c => c.addEventListener('change', syncSvcSel));
+  document.querySelectorAll('#paneRun [data-act]').forEach(b => b.addEventListener('click', () => {
+    const pid = Number(b.dataset.pid);
+    if (b.dataset.act === 'kill') killService(pid, b.dataset.name || '', b);
+    else restartService(pid, b.dataset.id, b.dataset.name || '', b);
+  }));
 }
 /* 自定义行 ↔ 运行中服务实时关联：运行中则启动按钮变“运行中”禁用态（重启/终止请到运行中服务操作） */
 function paintCustomStatus(services) {
   const items = lsGet(); if (!items.length) return;
   for (const x of items) {
-    const btn = document.getElementById('cpbtn-' + x.id); if (!btn || btn.dataset.busy) continue; // 启动进行中不抢按钮
+    const btn = customStartBtns.get(x.id); if (!btn || !document.body.contains(btn) || btn.dataset.busy) continue; // 启动进行中不抢按钮
     const match = (services || []).find(s =>
       (x.port && (s.ports || []).includes(Number(x.port))) ||
       (x.dir && s.command && String(s.command).toLowerCase().includes(String(x.dir).toLowerCase())));
@@ -220,29 +233,70 @@ function toggleCustomAll() {
   document.querySelectorAll('#customList .selbox').forEach(c => { if (!c.disabled) c.checked = all.checked; });
   syncCustomSel();
 }
+const customStartBtns = new Map(); // id -> 启动按钮（不用 id 拼 DOM id，导入的 id 不可信）
+function customCardHtml(x) {
+  const name = String(x.name == null ? '' : x.name);
+  const dir = String(x.dir == null ? '' : x.dir);
+  const cmd = String(x.cmd == null ? '' : x.cmd);
+  const stack = String(x.stack || 'Node.js');
+  const port = (x.port === 0 || x.port) ? String(x.port) : '';
+  const localTag = x.localOnly ? '<span class="tag" title="仅存浏览器本地，连上服务后自动补录">仅本地</span>' : '';
+  return `<div class="cproj-card" data-cid="${escAttr(x.id)}" data-name="${escAttr(name)}" data-port="${escAttr(port)}">
+ <input type="checkbox" class="selbox" data-cid="${escAttr(x.id)}" ${customSel.has(x.id) ? 'checked' : ''}>
+ <div class="cproj-main"><b>${escHtml(name)}</b><div style="margin-top:4px"><span class="${stackCls(stack)}">${escHtml(stack)}</span>${port ? `<span class="port-pill" title="启动前将检测该端口占用" style="margin-left:5px">:${escHtml(port)}</span>` : ''}${localTag}</div></div>
+ <div class="cproj-dir" title="${escAttr(dir)}">${escHtml(dir)}</div><div class="cproj-cmd" title="${escAttr(cmd)}">${escHtml(cmd)}</div>
+ <div class="cproj-ops">
+ <button class="btn btn-green" data-act="start">▶ 启动</button>
+ <button class="btn btn-ghost" data-act="edit">编辑</button>
+ <button class="btn btn-ghost" data-act="log">日志</button>
+ <button class="btn btn-ghost" data-act="diag" title="自动收集证据诊断">🤖 诊断</button>
+ <button class="btn btn-ghost" data-act="del">删除</button></div></div>`;
+}
 function renderCustom(l) {
   document.getElementById('cntCustom').textContent = l.length;
   const box = document.getElementById('customList');
-  box.innerHTML = l.length ? l.map(x => `<div class="cproj-card">
- <input type="checkbox" class="selbox" data-cid="${x.id}" ${customSel.has(x.id) ? 'checked' : ''} onchange="syncCustomSel()">
- <div class="cproj-main"><b>${x.name}</b><div style="margin-top:4px"><span class="${stackCls(x.stack || 'Node.js')}">${x.stack || 'Node.js'}</span>${x.port ? `<span class="port-pill" title="启动前将检测该端口占用" style="margin-left:5px">:${x.port}</span>` : ''}</div></div>
- <div class="cproj-dir" title="${String(x.dir || '').replace(/"/g, '&quot;')}">${x.dir || ''}</div><div class="cproj-cmd" title="${String(x.cmd || '').replace(/"/g, '&quot;')}">${x.cmd || ''}</div>
- <div class="cproj-ops">
- <button class="btn btn-green" id="cpbtn-${x.id}" onclick="startOne('${x.id}','${String(x.name || '').replace(/'/g, '')}',${x.port || 'null'},this)">▶ 启动</button>
- <button class="btn btn-ghost" onclick="openEdit('${x.id}')">编辑</button>
- <button class="btn btn-ghost" onclick="showLog('${x.id}','${String(x.name || '').replace(/'/g, '')}')">日志</button>
- <button class="btn btn-ghost" onclick="diagnose('${x.id}')" title="自动收集证据诊断">🤖 诊断</button>
- <button class="btn btn-ghost" onclick="delCustom('${x.id}')">删除</button></div></div>`).join('')
-    : '<div class="empty">还没有本地项目 — 点“+ 新增项目”手动添加</div>';
+  customStartBtns.clear();
+  box.innerHTML = l.length ? l.map(customCardHtml).join('') : '<div class="empty">还没有本地项目 — 点“+ 新增项目”手动添加</div>';
+  box.querySelectorAll('.cproj-card').forEach(card => {
+    const id = card.dataset.cid;
+    const name = card.dataset.name;
+    const port = card.dataset.port ? Number(card.dataset.port) : null;
+    const btn = card.querySelector('[data-act="start"]');
+    if (btn) {
+      customStartBtns.set(id, btn);
+      btn.addEventListener('click', () => startOne(id, name, port, btn));
+    }
+    card.querySelector('[data-act="edit"]').addEventListener('click', () => openEdit(id));
+    card.querySelector('[data-act="log"]').addEventListener('click', () => showLog(id, name));
+    card.querySelector('[data-act="diag"]').addEventListener('click', () => diagnose(id));
+    card.querySelector('[data-act="del"]').addEventListener('click', () => delCustom(id));
+    const cb = card.querySelector('.selbox');
+    if (cb) cb.addEventListener('change', syncCustomSel);
+  });
   syncCustomSel();
 }
+/* 配置源：服务端 devdeck.json 是唯一真相；localStorage 只做离线缓存 + “仅本地”待补录项 */
 async function loadCustom() {
-  renderCustom(lsGet());
   try {
-    const r = await fetch('/api/custom-projects'); if (!r.ok) return; const l = await r.json();
-    const seen = new Map(lsGet().map(x => [x.id, x])); l.forEach(x => seen.set(x.id, x));
-    const merged = [...seen.values()]; lsSet(merged); renderCustom(merged);
-  } catch {/* 服务端不可达时保留本地缓存展示 */ }
+    const r = await fetch('/api/custom-projects');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const list = await r.json();
+    const arr = Array.isArray(list) ? list : [];
+    // 离线期间新增、尚未落库的项目：连上后补录，失败则继续保留在本地待下次重试
+    const pending = lsGet().filter(x => x.localOnly && !arr.some(y => String(y.id) === String(x.id)));
+    let synced = 0;
+    for (const it of pending) {
+      try {
+        const body = { name: it.name, dir: it.dir, cmd: it.cmd, port: it.port, stack: it.stack };
+        const pr = await fetch('/api/custom-projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (pr.ok) { arr.push(await pr.json()); synced++; } else { arr.push(it); }
+      } catch { arr.push(it); }
+    }
+    lsSet(arr); renderCustom(arr);
+    if (synced) toast(`已把 ${synced} 个离线新增项目补录到服务端`, 'ok');
+  } catch {
+    renderCustom(lsGet()); // 服务端不可达：仅展示缓存，不写回、不合并
+  }
 }
 async function addCustom() {
   const name = fName.value.trim(), dir = fDir.value.trim(), cmd = fCmd.value.trim(), port = fPort.value.trim(), stack = fStack.value.trim();
@@ -252,7 +306,7 @@ async function addCustom() {
     const r = await fetch('/api/custom-projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, dir, cmd, port: port || null, stack: stack || null }) });
     const j = await r.json();
     if (!r.ok) return toast('添加失败：' + (j.error || '未知错误'), 'err');
-    const cur = lsGet(); cur.push(j); lsSet(cur); renderCustom(cur); closeAdd(); toast(`已添加「${j.name}」`, 'ok');
+    closeAdd(); await loadCustom(); toast(`已添加「${j.name}」`, 'ok');
   } catch (e) {
     const item = { id: 'local' + Date.now().toString(36), name, dir, cmd, port: port ? Number(port) : null, stack: stack || null, localOnly: true };
     const cur = lsGet(); cur.push(item); lsSet(cur); renderCustom(cur);
@@ -288,8 +342,11 @@ async function cfgImportPicked(ev) {
 async function delCustom(id) {
   const it = lsGet().find(x => x.id === id);
   if (!await confirmDlg(`删除本地项目「${it ? it.name : id}」？\n（仅删除配置，不影响已启动的进程）`, '删除项目')) return;
-  lsSet(lsGet().filter(x => x.id !== id)); renderCustom(lsGet());
-  try { await fetch('/api/custom-projects/' + id, { method: 'DELETE' }); } catch { }
+  try {
+    const r = await fetch('/api/custom-projects/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); toast('删除失败：' + (j.error || r.status), 'err'); return; }
+    await loadCustom(); toast(`已删除「${it ? it.name : id}」`, 'ok');
+  } catch (e) { toast('删除请求失败：' + e.message + '（配置未改动）', 'err'); }
 }
 function toast(msg, type = 'info', ms = 4500) {
   const box = document.getElementById('toasts') || (() => { const d = document.createElement('div'); d.id = 'toasts'; document.body.appendChild(d); return d; })();
@@ -365,11 +422,11 @@ async function dirLoad(dir) {
     curEl.textContent = j.dir || '此电脑';
     curEl.title = j.dir || '';
     document.getElementById('dirUp').disabled = !j.parent && !j.dir;
-    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const esc = s => escHtml(s);
     let html = '';
-    (j.drives || []).forEach(d => { html += `<li class="drv" data-d="${esc(d)}"><span>💽 ${esc(d)}</span></li>`; });
+    (j.drives || []).forEach(d => { html += `<li class="drv" data-d="${escAttr(d)}"><span>💽 ${esc(d)}</span></li>`; });
     (j.entries || []).forEach(e => {
-      if (e.isDir) html += `<li class="dir" data-d="${esc(e.name)}"><span>📁 ${esc(e.name)}</span></li>`;
+      if (e.isDir) html += `<li class="dir" data-d="${escAttr(e.name)}"><span>📁 ${esc(e.name)}</span></li>`;
       else html += `<li class="f"><span>📄 ${esc(e.name)}</span>${/^(package\.json)$/i.test(e.name) ? '<b class="pkg">项目标识</b>' : ''}</li>`;
     });
     list.innerHTML = html || '<li class="dim">空目录</li>';
@@ -379,7 +436,7 @@ async function dirLoad(dir) {
     });
     if ((j.entries || []).some(e => !e.isDir && /^package\.json$/i.test(e.name))) tip.textContent = '✔ 检测到 package.json，选定当前目录即可';
     else if (j.dir) tip.textContent = '进入含 package.json 的项目根目录后点“选定目录”';
-  } catch (e) { list.innerHTML = '<li class="dim">加载失败：' + (e.message || e) + '</li>'; }
+  } catch (e) { list.innerHTML = '<li class="dim">加载失败：' + escHtml(e.message || e) + '</li>'; }
 }
 function dirGoUp() {
   const list = document.getElementById('dirList');
@@ -433,7 +490,7 @@ function ddRender(ddId, kw) {
   const box = document.getElementById(ddId); if (!box) return;
   const ul = box.querySelector('.dd-list'); const k = (kw || '').toLowerCase();
   const hit = (ddOpts[ddId] || []).filter(o => o.toLowerCase().includes(k));
-  ul.innerHTML = hit.length ? hit.map(o => `<li data-v="${o.replace(/"/g, '&quot;')}">${o.replace(/</g, '&lt;')}</li>`).join('')
+  ul.innerHTML = hit.length ? hit.map(o => `<li data-v="${escAttr(o)}">${escHtml(o)}</li>`).join('')
     : '<li class="dim">无匹配，直接回车用输入值</li>';
   ul.querySelectorAll('li[data-v]').forEach(li => li.onmousedown = e => {
     e.preventDefault();
@@ -702,14 +759,13 @@ async function saveEdit() {
   if (!body.name || !body.dir || (!body.cmd && !/静态/.test(body.stack || ''))) return toast('名称 / 目录必填（静态页面无需命令）', 'warn');
   if (/静态/.test(body.stack || '') && !body.port) return toast('静态页面必须配置端口', 'warn');
   try {
-    const r = await fetch('/api/custom-projects/' + editId, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await fetch('/api/custom-projects/' + encodeURIComponent(editId), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) return toast('保存失败：' + (j.error || r.status), 'err');
-    const cur = lsGet(); const i = cur.findIndex(c => c.id === editId); if (i >= 0) cur[i] = { ...cur[i], ...j };
-    lsSet(cur); renderCustom(cur); closeEdit(); fetchAllData(true); toast('已保存', 'ok');
+    closeEdit(); await loadCustom(); fetchAllData(true); toast('已保存', 'ok');
   } catch (e) {
     const cur = lsGet(); const i = cur.findIndex(c => c.id === editId); if (i >= 0) cur[i] = { ...cur[i], ...body, port: body.port ? Number(body.port) : null };
-    lsSet(cur); renderCustom(cur); closeEdit(); toast('已保存到本地（服务端不可达）', 'warn');
+    lsSet(cur); renderCustom(cur); closeEdit(); toast('已保存到本地（服务端不可达，连上后以服务端配置为准）', 'warn');
   }
 }
 async function startAll() {
@@ -778,6 +834,10 @@ async function fetchServices() {
 async function fetchAllData() {
   if (suspendRender) return;
   await fetchServices();
+}
+// 悬浮卡的操作结果（终止/重启）转发到主窗口 toast；主窗口隐藏时悬浮卡自身也会提示
+if (window.ddAPI && typeof ddAPI.onOverlayToast === 'function') {
+  ddAPI.onOverlayToast(msg => toast(String(msg), 'info'));
 }
 setInterval(() => { if (!document.hidden) fetchServices(); }, 10000);
 applyTheme(themeGet());

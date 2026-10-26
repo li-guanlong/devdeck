@@ -1,8 +1,25 @@
 // DevDeck 悬浮卡片前端逻辑
 // 复用网页端的 /api/node-services 轮询，不依赖后端改动。
+// 安全：服务名/项目名来自配置或进程命令行，进 HTML 前一律走 DDSafe 转义。
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
+  const { escapeHtml: escHtml, escapeAttr: escAttr } = window.DDSafe;
+
+  /* ===== 卡内提示：悬浮窗没有主窗口的 toast 容器，操作结果就地反馈（并同步转发主窗口） ===== */
+  let toastTimer = null;
+  function uiToast(msg) {
+    const el = $('toast');
+    if (!el) return;
+    el.textContent = String(msg == null ? '' : msg);
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+  }
+  function notify(msg) {
+    uiToast(msg);
+    try { if (window.overlayAPI && window.overlayAPI.toast) window.overlayAPI.toast(String(msg == null ? '' : msg)); } catch {}
+  }
 
   /* ===== 主题：独立存储（devdeck_overlay_theme），初始继承主看板当前主题，之后悬浮卡片单独控制 ===== */
   const MAIN_THEME_KEY = 'devdeck_theme';     // 主看板主题 key
@@ -107,28 +124,30 @@
     if (!list.length) { box.innerHTML = '<div class="empty">暂无运行中的 dev server</div>'; return; }
     box.innerHTML = list.map((s, i) => {
       const addr = (s.urls || []).find(u => u.includes('localhost')) || (s.urls || [])[0] || '';
-      const nm = dispName(s).replace(/"/g, '&quot;');
+      const rawName = String(dispName(s) || '');           // 原始值：只用于比较，不直接进 DOM
+      const nm = escHtml(rawName);                          // 文本节点：转义后渲染
+      const safeName = escAttr(rawName);                    // 属性/dataset：转义后写入
       const m = matchLocal(s);
-      const sub = (m && m.name && nm !== s.name)
-        ? (s.name || 'node 服务').replace(/"/g, '&quot;')
-        : 'PID ' + s.pid;
-      const safe = nm.replace(/"/g, '&quot;');
+      const sub = (m && m.name && rawName !== s.name)
+        ? escHtml(s.name || 'node 服务')
+        : 'PID ' + escHtml(s.pid);
+      const firstPort = (s.ports || [])[0];
       // 只有命中本地项目配置的服务才能重启（与主看板一致）
       const rebootBtn = m && m.id
-        ? `<button class="ibtn reboot" data-pid="${s.pid}" data-id="${m.id}" data-name="${safe}" title="终止后按项目配置重新启动">重启</button>`
+        ? `<button class="ibtn reboot" data-pid="${escAttr(s.pid)}" data-id="${escAttr(m.id)}" data-name="${safeName}" title="终止后按项目配置重新启动">重启</button>`
         : '';
       return `<div class="item">
         <div class="row1">
-          <div class="nm" title="${nm}"><b>${nm}</b><div class="pid">${sub}</div></div>
-          <span class="port">:${(s.ports || [])[0] || '-'}</span>
+          <div class="nm" title="${safeName}"><b>${nm}</b><div class="pid">${sub}</div></div>
+          <span class="port">:${escHtml(firstPort == null ? '-' : firstPort)}</span>
           <div class="ops">
-            <button class="ibtn open" ${addr ? '' : 'disabled'} data-url="${addr.replace(/"/g, '&quot;')}" title="打开地址">打开</button>
+            <button class="ibtn open" ${addr ? '' : 'disabled'} data-url="${escAttr(addr)}" title="打开地址">打开</button>
             ${rebootBtn}
-            <button class="ibtn kill" data-pid="${s.pid}" data-name="${safe}">终止</button>
+            <button class="ibtn kill" data-pid="${escAttr(s.pid)}" data-name="${safeName}">终止</button>
           </div>
         </div>
         <div class="row2">
-          <div class="meta"><span>PID <b>${s.pid}</b></span><span>内存 <b>${s.mem}M</b></span><span>CPU <b>${s.cpu}%</b></span></div>
+          <div class="meta"><span>PID <b>${escHtml(s.pid)}</b></span><span>内存 <b>${escHtml(s.mem)}M</b></span><span>CPU <b>${escHtml(s.cpu)}%</b></span></div>
         </div>
       </div>`;
     }).join('');
@@ -143,16 +162,16 @@
       try {
         const r = await fetch('/api/kill-service', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pid: Number(pid) }) });
         const j = await r.json().catch(() => ({}));
-        if (!r.ok) { b.disabled = false; window.overlayAPI && window.overlayAPI.toast('终止失败：' + (j.error || r.status)); return; }
-        window.overlayAPI && window.overlayAPI.toast('已终止 ' + name);
+        if (!r.ok) { b.disabled = false; notify('终止失败：' + (j.error || r.status)); return; }
+        notify('已终止 ' + name);
         setTimeout(fetchServices, 1200);
-      } catch (e) { b.disabled = false; window.overlayAPI && window.overlayAPI.toast('请求失败：' + e.message); }
+      } catch (e) { b.disabled = false; notify('请求失败：' + e.message); }
     }));
     // 重启 = 终止 → 等旧进程消失 → 等端口释放 → 按项目配置重新启动（同主看板 restartCore）
     box.querySelectorAll('.ibtn.reboot').forEach(b => b.addEventListener('click', async () => {
       const pid = Number(b.dataset.pid), id = b.dataset.id, name = b.dataset.name;
       b.disabled = true; const old = b.textContent; b.textContent = '重启中…';
-      const toast = msg => { if (window.overlayAPI) window.overlayAPI.toast(msg); };
+      const toast = notify;
       try {
         const r = await fetch('/api/kill-service', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pid }) });
         let j = {}; try { j = await r.json(); } catch {}

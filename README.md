@@ -25,6 +25,20 @@ pnpm run desktop  # 桌面：electron .（内置服务 + 窗口），双击桌�
 
 桌面一键启动：项目根 `启动DevDeck.vbs`（无黑窗）+ 桌面 `DevDeck.lnk` 快捷方式，双击即 `pnpm run desktop`。
 
+## 测试
+
+```powershell
+pnpm test          # node --test tests，每个测试文件独立子进程（推荐）
+pnpm test:inproc   # 受限环境：公司电脑若禁止子进程/命名管道，用单进程顺序跑
+```
+
+覆盖四层（共 20 个用例）：
+
+- `tests/sanitize.test.js` — 转义原语（`&`/`<`/`>`/引号、null 归一）
+- `tests/render-xss.test.js` — 把真实 `sanitize.js` + `app.js` 放进 vm，验证恶意项目配置渲染后不产生标签
+- `tests/request-guard.test.js` — 控制面 Host/Origin 校验（DNS rebinding、跨站请求）
+- `tests/api.test.js` — 真实加载 `server.js`（`child_process` 打桩，不启动真实进程），验证 403 拦截、CRUD、导入合并、kill 白名单、启动命令下发
+
 ## 打包分发（v1 流程）
 
 ```powershell
@@ -71,7 +85,18 @@ pnpm run dist:verify   # 打包 + 自动验包，断言 app.asar.unpacked\static
 ## 安全
 
 - 控制面（kill / 日志 / 配置）只绑 `127.0.0.1`，不暴露局域网；页面平铺的局域网 URL 是各 dev server 自带监听，便于手机访问。
+- **`/api/*` 增加 Host/Origin 校验**（`lib/request-guard.js`）：只接受回环 Host；带 Origin 的请求必须来自同一端口。用于挡 DNS rebinding 与跨站直连——否则任意网页都能驱动本机的 kill/启动接口。
+- **前端渲染统一转义**（`public/sanitize.js`）：项目名/目录/命令/进程命令行一律经 `DDSafe` 转义后才进 DOM，动态卡片改事件委托，不再拼 `onclick`。配置导入的 JSON 视为不可信输入。
 - `server.js` 用 `spawn` 参数化 PowerShell（-EncodedCommand UTF-16LE），目录/命令含引号已转义；`kill-service` 仅允许终止占端口的 node/静态托管进程，拒绝 DevDeck 自身。
+- 配置以服务端 `devdeck.json` 为唯一真相；`localStorage` 只做离线缓存，离线新增的「仅本地」项在连上服务后自动补录。
+
+## P0 安全修复（分支 fix/p0-hardening）
+
+- 修复：配置内容 → 前端 XSS → 本地命令执行（导入恶意 JSON 即可触发）——所有渲染路径统一转义
+- 修复：控制面 API 无 Host/Origin 校验，可被 DNS rebinding 驱动——新增请求守卫
+- 修复：悬浮卡「终止/重启」结果提示丢失（`overlay-toast` 无人监听）——主窗口接上监听，悬浮卡也内置 toast
+- 修复：服务端配置与 `localStorage` 双真相导致删除后仍显示、启动报 404——改为服务端唯一真相
+- 新增：`tests/`（20 个用例）与 `pnpm test` / `pnpm test:inproc`
 
 ## v1.0 变更
 

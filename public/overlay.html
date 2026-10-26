@@ -370,6 +370,32 @@
       color: var(--acc);
       border-color: var(--btn-hover-border);
     }
+
+    /* 卡内操作提示：悬浮窗独立反馈，3.2s 自动消失 */
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%) translateY(8px);
+      max-width: 88vw;
+      padding: 6px 10px;
+      border-radius: 8px;
+      background: var(--panel-bg);
+      border: 1px solid var(--btn-hover-border);
+      color: var(--txt);
+      font-size: 11px;
+      line-height: 1.4;
+      text-align: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .18s, transform .18s;
+      z-index: 9;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
   </style>
 </head>
 
@@ -395,6 +421,9 @@
     </div>
   </div>
 
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="sanitize.js"></script>
   <script src="overlay.js"></script>
 </body>
 

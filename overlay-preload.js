@@ -11,7 +11,5 @@ contextBridge.exposeInMainWorld('overlayAPI', {
   // 提示气泡（主进程调用，或直接回传）
   toast: (msg) => ipcRenderer.send('overlay:toast', msg),
   // 上报当前折叠/置顶状态（供主进程持久化记忆）
-  reportPos: (state) => ipcRenderer.send('overlay:state', state),
-  // 主进程 -> 页面：加载完成信号
-  onReady: (cb) => ipcRenderer.on('overlay:ready', () => cb())
+  reportPos: (state) => ipcRenderer.send('overlay:state', state)
 });
