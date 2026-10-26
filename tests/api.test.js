@@ -9,6 +9,7 @@ const path = require('node:path');
 
 // ---- child_process 打桩：记录 spawn 调用，exec 返回空输出（=无进程/无端口） ----
 const spawned = [];
+let spawnError = null; // 置为 Error 时，下一次 spawn 同步抛错（模拟 EPERM/ENOENT）
 const cp = require('child_process');
 cp.exec = (cmd, opts, cb) => {
   if (typeof opts === 'function') { cb = opts; }
@@ -17,6 +18,7 @@ cp.exec = (cmd, opts, cb) => {
 };
 cp.spawn = (file, args) => {
   spawned.push({ file, args });
+  if (spawnError) { const e = spawnError; spawnError = null; throw e; }
   return { pid: 4242, unref() {}, on() {} };
 };
 
@@ -31,8 +33,9 @@ global.setTimeout = (...a) => { const t = realSetTimeout(...a); timeouts.push(t)
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'devdeck-test-'));
 process.env.DEVDECK_NO_LISTEN = '1';
 process.env.DEVDECK_DATA_DIR = dataDir;
+delete process.env.PORT; // 保证断言的是代码里的默认端口
 
-const { app } = require('../server');
+const { app, PORT } = require('../server');
 
 global.setInterval = realSetInterval;
 global.setTimeout = realSetTimeout;
@@ -106,7 +109,7 @@ test('跨源 Origin 的写操作被 403 拒绝', async () => {
 test('创建项目：同源 Origin 放行，重复端口 400', async () => {
   const ok = await request('POST', '/api/custom-projects', {
     headers: { ...loopback(), Origin: `http://127.0.0.1:${port}` },
-    body: { name: 'P0测试项目', dir: 'D:\\proj\\p0', cmd: 'pnpm dev', port: 5311, stack: 'Vite' }
+    body: { name: 'P0测试项目', dir: dataDir, cmd: 'pnpm dev', port: 5311, stack: 'Vite' }
   });
   assert.equal(ok.status, 200);
   assert.equal(ok.json.name, 'P0测试项目');
@@ -156,4 +159,54 @@ test('启动项目：命令经 spawn 下发（打桩捕获，不执行真实进�
   assert.equal(r.json.pid, 4242);
   assert.equal(spawned.length, before + 1);
   assert.equal(spawned[spawned.length - 1].file, 'powershell.exe');
+});
+
+// 取最近一次 launch 的 PowerShell 脚本文本（-EncodedCommand 是 UTF-16LE base64）
+function lastLaunchScript() {
+  const call = spawned[spawned.length - 1];
+  const i = call.args.indexOf('-EncodedCommand');
+  return Buffer.from(call.args[i + 1], 'base64').toString('utf16le');
+}
+
+test('静态项目：命令行只带位置参数端口，不再追加 --port', async () => {
+  const created = await request('POST', '/api/custom-projects', {
+    headers: loopback(),
+    body: { name: '静态页P1', dir: dataDir, cmd: '内置静态托管（无需命令）', port: 5321, stack: '静态页面' }
+  });
+  assert.equal(created.status, 200);
+  const r = await request('POST', '/api/start-project', { headers: loopback(), body: { id: created.json.id } });
+  assert.equal(r.status, 200);
+  const cmd = lastLaunchScript();
+  assert.match(cmd, /static-serve\.js/);
+  assert.ok(/\s5321\b/.test(cmd), '端口应作为位置参数传给 static-serve：' + cmd);
+  assert.ok(!/--port/.test(cmd), '静态托管不应再拼接 --port：' + cmd);
+});
+
+test('spawn 同步抛错（EPERM）：返回 500 且服务不崩', async () => {
+  const list = await request('GET', '/api/custom-projects', { headers: loopback() });
+  const item = list.json.find(x => x.name === 'P0测试项目');
+  spawnError = Object.assign(new Error('spawn EPERM'), { code: 'EPERM' });
+  const r = await request('POST', '/api/start-project', { headers: loopback(), body: { id: item.id } });
+  assert.equal(r.status, 500);
+  assert.match(r.json.error, /启动器进程创建失败/);
+  // 服务仍然可用
+  const after = await request('GET', '/api/custom-projects', { headers: loopback() });
+  assert.equal(after.status, 200);
+});
+
+test('启动目录不存在：直接 500 可读错误，不尝试 spawn', async () => {
+  const created = await request('POST', '/api/custom-projects', {
+    headers: loopback(),
+    body: { name: '坏目录', dir: 'D:\\devdeck-not-exist-' + Date.now(), cmd: 'pnpm dev' }
+  });
+  assert.equal(created.status, 200);
+  const before = spawned.length;
+  const r = await request('POST', '/api/start-project', { headers: loopback(), body: { id: created.json.id } });
+  assert.equal(r.status, 500);
+  assert.match(r.json.error, /启动目录不存在/);
+  assert.equal(spawned.length, before, '目录不存在时不应调用 spawn');
+});
+
+test('默认端口与文档一致（3300）', () => {
+  assert.equal(PORT, 3300);
 });

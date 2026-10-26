@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('overlayAPI', {
   openExternal: (url) => ipcRenderer.send('overlay:open-external', url),
   // 提示气泡（主进程调用，或直接回传）
   toast: (msg) => ipcRenderer.send('overlay:toast', msg),
-  // 上报当前折叠/置顶状态（供主进程持久化记忆）
-  reportPos: (state) => ipcRenderer.send('overlay:state', state)
+  // 上报折叠/置顶状态（只传改动项，主进程合并后持久化）
+  reportPos: (state) => ipcRenderer.send('overlay:state', state),
+  // 读取主进程持久化的状态：折叠/置顶以 overlay-state.json 为唯一真相
+  getState: () => ipcRenderer.invoke('overlay:get-state')
 });

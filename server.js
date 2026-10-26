@@ -7,13 +7,15 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { createRequestGuard } = require('./lib/request-guard');
+const { createStore } = require('./lib/store');
 
 const app = express();
 app.disable('x-powered-by');
 // 安全：控制面 API 能启停进程并执行项目启动命令，先校验 Host/Origin（挡 DNS rebinding 与跨站请求），再解析请求体
 app.use(createRequestGuard());
 app.use(express.json());
-const PORT = Number(process.env.PORT) || 3030;
+// 默认端口与 README / 页面提示保持一致（桌面版也从 3300 起找空闲；可用 PORT 覆盖）
+const PORT = Number(process.env.PORT) || 3300;
 const DATA_DIR = process.env.DEVDECK_DATA_DIR || __dirname;
 // 打包后 static-serve 不走系统 node：exe 用户机器可能没装 Node，用 exe 内置的 Node 跑（ELECTRON_RUN_AS_NODE）
 function packagedApp() {
@@ -28,30 +30,35 @@ let nodeProcs = new Map(); // pid -> { command, memMB, cpu }
 let nodeProcPrev = null; // { t, map: pid -> cpuSec }
 function sampleNodeProcs() {
   if (process.platform !== 'win32') return;
-  exec('powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \'node.exe\' -or ($_.CommandLine -and $_.CommandLine.Contains(\'static-serve.js\')) } | Select-Object ProcessId,CommandLine,WorkingSetSize,KernelModeTime,UserModeTime | ConvertTo-Json -Compress -Depth 2"',
-    { timeout: 8000, maxBuffer: 4 * 1024 * 1024 }, (e, out) => {
-      try {
-        if (e || !out) return;
-        const now = Date.now(), cur = new Map(), cpuSec = {};
-        for (const r of parseCimJson(out)) {
-          const pid = Number(r.ProcessId); if (!pid) continue;
-          const ws = Number(r.WorkingSetSize) || 0, kt = Number(r.KernelModeTime) || 0, ut = Number(r.UserModeTime) || 0;
-          cur.set(pid, { command: String(r.CommandLine == null ? '' : r.CommandLine), memMB: ws / 1048576 });
-          cpuSec[pid] = (kt + ut) / 1e7;
-        }
-        if (nodeProcPrev) {
-          const dt = (now - nodeProcPrev.t) / 1000;
-          if (dt > 0.5) for (const [pid, info] of cur) {
-            const p = nodeProcPrev.map[pid];
-            info.cpu = (p === undefined) ? 0 : Math.max(0, ((cpuSec[pid] - p) / dt / NCPU) * 100);
+  try {
+    exec('powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq \'node.exe\' -or ($_.CommandLine -and $_.CommandLine.Contains(\'static-serve.js\')) } | Select-Object ProcessId,CommandLine,WorkingSetSize,KernelModeTime,UserModeTime | ConvertTo-Json -Compress -Depth 2"',
+      { timeout: 8000, maxBuffer: 4 * 1024 * 1024 }, (e, out) => {
+        try {
+          if (e || !out) return;
+          const now = Date.now(), cur = new Map(), cpuSec = {};
+          for (const r of parseCimJson(out)) {
+            const pid = Number(r.ProcessId); if (!pid) continue;
+            const ws = Number(r.WorkingSetSize) || 0, kt = Number(r.KernelModeTime) || 0, ut = Number(r.UserModeTime) || 0;
+            cur.set(pid, { command: String(r.CommandLine == null ? '' : r.CommandLine), memMB: ws / 1048576 });
+            cpuSec[pid] = (kt + ut) / 1e7;
           }
-        } else {
-          for (const info of cur.values()) info.cpu = 0;
-        }
-        nodeProcs = cur;
-        nodeProcPrev = { t: now, map: cpuSec };
-      } catch {}
-    });
+          if (nodeProcPrev) {
+            const dt = (now - nodeProcPrev.t) / 1000;
+            if (dt > 0.5) for (const [pid, info] of cur) {
+              const p = nodeProcPrev.map[pid];
+              info.cpu = (p === undefined) ? 0 : Math.max(0, ((cpuSec[pid] - p) / dt / NCPU) * 100);
+            }
+          } else {
+            for (const info of cur.values()) info.cpu = 0;
+          }
+          nodeProcs = cur;
+          nodeProcPrev = { t: now, map: cpuSec };
+        } catch {}
+      });
+  } catch (e) {
+    // 同步抛错（被安全软件拦截 / PowerShell 被策略禁用 / EPERM）不能让整个服务起不来
+    try { fs.appendFileSync(BOOT_LOG, `${new Date().toISOString()} SAMPLE FAIL ${e && e.message}\n`); } catch {}
+  }
 }
 sampleNodeProcs();
 setInterval(sampleNodeProcs, 5000);
@@ -203,11 +210,12 @@ app.post('/api/kill-service', async (req, res) => {
 });
 
 // ===================== 本地项目 CRUD =====================
-const CUSTOM_FILE = path.join(DATA_DIR, 'devdeck.json');
-function loadCustom() {
-  try { if (!fs.existsSync(CUSTOM_FILE)) return []; return JSON.parse(fs.readFileSync(CUSTOM_FILE, 'utf8') || '[]'); } catch { return []; }
-}
-function saveCustom(list) { fs.writeFileSync(CUSTOM_FILE, JSON.stringify(list, null, 2), 'utf8'); }
+// 持久化交给 lib/store：原子写 + .bak + 损坏文件隔离，解析失败不再静默清零
+const store = createStore(DATA_DIR, {
+  log: msg => { try { fs.appendFileSync(BOOT_LOG, `${new Date().toISOString()} STORE ${msg}\n`); } catch {} }
+});
+function loadCustom() { return store.load(); }
+function saveCustom(list) { store.save(list); }
 
 app.get('/api/custom-projects', (req, res) => res.json(loadCustom()));
 app.post('/api/custom-projects', (req, res) => {
@@ -412,6 +420,10 @@ function launch(item) {
   const log = logPathFor(item);
   migrateLegacyLog(item);
   const port = Number(item.port) || 0;
+  // cwd 不存在时 spawn 会异步报 ENOENT；提前判掉，给出可读错误而不是一条没头没尾的失败
+  let dirStat = null;
+  try { dirStat = item.dir ? fs.statSync(item.dir) : null; } catch {}
+  if (!dirStat || !dirStat.isDirectory()) throw new Error('启动目录不存在或不是文件夹：' + (item.dir || '(未配置)'));
   // 端口透传链：pnpm serve -- -- --port → turbo → 任务 → vite 真正监听；
   // strictPort 让占位直接失败进日志，不静默漂到别的端口；
   // 以 root package.json 的 script 文本判断 turbo，不信表单 stack 字段；
@@ -436,7 +448,8 @@ function launch(item) {
       ? `set "ELECTRON_RUN_AS_NODE=1" && "${process.execPath}" "${srv}" "${item.dir}" ${port}`
       : `node "${srv}" "${item.dir}" ${port}`;
   }
-  if (port && !/--port[=\s]|[\s-]p[=\s]?\d|PORT\s*=/.test(item.cmd)) {
+  // 静态托管自己按位置参数收端口，不能再追加 --port（否则会污染命令行与进程识别）
+  if (port && !isStatic && !/--port[=\s]|[\s-]p[=\s]?\d|PORT\s*=/.test(item.cmd)) {
     const scriptText = readScriptText(item.dir, item.cmd);
     const isVueCli = /vue-cli-service\s+serve/.test(scriptText);
     if (!isVueCli) {
@@ -457,9 +470,19 @@ function launch(item) {
     fullCmd.replace(/'/g, "''") + '\' -WorkingDirectory \'' + item.dir.replace(/'/g, "''") +
     '\' -WindowStyle Hidden';
   const psB64 = Buffer.from(psScript, 'utf16le').toString('base64');
-  const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', psB64], {
-    cwd: item.dir, windowsHide: true, stdio: 'ignore'
+  let child;
+  try {
+    child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', psB64], {
+      cwd: item.dir, windowsHide: true, stdio: 'ignore'
+    });
+  } catch (e) {
+    throw new Error('启动器进程创建失败：' + ((e && e.message) || e));
+  }
+  // 异步错误（ENOENT/EPERM/被安全软件拦截）必须有人接，否则会变成未捕获异常
+  child.on('error', (e) => {
+    try { fs.appendFileSync(log, `\n[devdeck] 启动器进程异常：${(e && e.message) || e}\n`); } catch {}
   });
+  if (!child.pid) throw new Error('启动器进程创建失败（powershell.exe 不可用？详见项目日志）');
   child.unref();
   return child;
 }
@@ -944,7 +967,6 @@ app.post('/api/install-deps', async (req, res) => {
 app.use(express.static(path.join(__dirname, 'public')));
 
 let server = null;
-sampleNodeProcs();
 // 安全：控制面只绑回环地址。同机前端/Electron 走 localhost；页面上平铺的局域网 URL 是各 dev server
 // 自带的监听地址（手机可访问），DevDeck 自身的 kill/log/配置 API 不再暴露给同网段。如需远程管理请走 SSH 端口转发。
 // 测试用：DEVDECK_NO_LISTEN=1 时只导出 app，由测试自己 listen(0) 拿随机端口。
@@ -963,4 +985,4 @@ if (process.env.DEVDECK_NO_LISTEN !== '1') {
   });
 }
 
-module.exports = { app };
+module.exports = { app, PORT };

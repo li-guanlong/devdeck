@@ -43,8 +43,9 @@ let tray = null;
 let isQuiting = false;
 let overlayWin = null; // 桌面悬浮卡片窗口
 const APP_ICON = path.join(__dirname, 'assets', 'favicon-256.png'); // 任务栏/托盘图标（取自 favicon.svg）
-const OVERLAY_FILE = path.join(__dirname, 'public', 'overlay.html');
 const OVERLAY_PRELOAD = path.join(__dirname, 'overlay-preload.js');
+const OVERLAY_W = 300, OVERLAY_H = 400, OVERLAY_COLLAPSED_H = 68; // 折叠态只留一条状态栏的高度
+
 function overlayStatePath() {
   // 打包后迁 userData（tmpdir 会被系统清理导致位置记忆丢失）；开发模式保持 tmp 避免污染源码目录
   try {
@@ -54,8 +55,15 @@ function overlayStatePath() {
 } // 悬浮窗位置/折叠/置顶记忆
 
 function loadOverlayState() {
-  try { const f = overlayStatePath(); if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f, 'utf8')); } catch {}
-  return { x: null, y: null, pinned: true, collapsed: false };
+  const base = { x: null, y: null, pinned: true, collapsed: false };
+  try {
+    const f = overlayStatePath();
+    if (fs.existsSync(f)) {
+      const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+      if (j && typeof j === 'object') return { ...base, ...j };
+    }
+  } catch {}
+  return base;
 }
 function saveOverlayState(st) { try { fs.writeFileSync(overlayStatePath(), JSON.stringify(st)); } catch {} }
 
@@ -81,17 +89,52 @@ function createWindow() {
   win.on('resize', () => { setMoving(true); clearTimeout(moveTimer); moveTimer = setTimeout(() => setMoving(false), 350); });
 }
 
+// 折叠/展开时同步窗口高度：透明窗口不会让点击穿透，不缩窗会一直挡着桌面
+function applyOverlayCollapsed() {
+  if (!overlayWin || overlayWin.isDestroyed()) return;
+  const st = loadOverlayState();
+  const [w, h] = overlayWin.getSize();
+  const want = st.collapsed ? OVERLAY_COLLAPSED_H : OVERLAY_H;
+  if (h !== want) overlayWin.setSize(w, want);
+}
+
+// IPC 只注册一次：重复 createOverlay 不再叠加监听器
+function registerOverlayIpc() {
+  ipcMain.on('overlay:set-always-on-top', (_e, on) => {
+    if (overlayWin && !overlayWin.isDestroyed()) overlayWin.setAlwaysOnTop(!!on, 'floating');
+    saveOverlayState({ ...loadOverlayState(), pinned: !!on });
+  });
+  ipcMain.on('overlay:hide', () => { if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide(); });
+  ipcMain.on('overlay:open-external', (_e, url) => { if (typeof url === 'string' && /^https?:\/\//.test(url)) shell.openExternal(url); });
+  ipcMain.on('overlay:toast', (_e, msg) => { try { if (win && !win.isDestroyed()) win.webContents.send('overlay-toast', String(msg)); } catch {} });
+  // 只合并传来的字段：悬浮卡只发改动项，避免把另一项误写成 false（旧版把 pinned/collapsed 都强制布尔化）
+  ipcMain.on('overlay:state', (_e, s) => {
+    const next = { ...loadOverlayState() };
+    if (s && typeof s.collapsed === 'boolean') next.collapsed = s.collapsed;
+    if (s && typeof s.pinned === 'boolean') next.pinned = s.pinned;
+    saveOverlayState(next);
+    if (s && typeof s.collapsed === 'boolean') applyOverlayCollapsed();
+    if (overlayWin && !overlayWin.isDestroyed()) overlayWin.setAlwaysOnTop(!!next.pinned, 'floating');
+  });
+  // 悬浮卡启动时读主进程状态：折叠/置顶以 overlay-state.json 为唯一真相
+  ipcMain.handle('overlay:get-state', () => {
+    const st = loadOverlayState();
+    return { pinned: !!st.pinned, collapsed: !!st.collapsed };
+  });
+}
+registerOverlayIpc();
+
 // ===================== 桌面悬浮卡片窗口 =====================
 // 无边框、置顶、透明底小窗，加载 public/overlay.html，复用 /api/node-services 轮询。
 function createOverlay() {
   const st = loadOverlayState();
-  const W = 300, H = 400;
+  const H = st.collapsed ? OVERLAY_COLLAPSED_H : OVERLAY_H;
   let wa = { width: 1920, height: 1080 };
   try { wa = screen.getPrimaryDisplay().workArea; } catch {}
-  const x = (typeof st.x === 'number') ? st.x : (wa.width - W - 24);
+  const x = (typeof st.x === 'number') ? st.x : (wa.width - OVERLAY_W - 24);
   const y = (typeof st.y === 'number') ? st.y : (wa.height - H - 80);
   overlayWin = new BrowserWindow({
-    width: W, height: H,
+    width: OVERLAY_W, height: H,
     x, y,
     frame: false, transparent: true, alwaysOnTop: !!st.pinned, skipTaskbar: true,
     resizable: false, maximizable: false, fullscreenable: false,
@@ -110,12 +153,8 @@ function createOverlay() {
   overlayWin.on('move', savePos);
   overlayWin.on('close', (e) => { if (!isQuiting) { e.preventDefault(); overlayWin.hide(); } }); // 关悬浮窗→隐藏
   overlayWin.on('closed', () => { overlayWin = null; });
-  // IPC：置顶切换 / 隐藏 / 打开外部链接 / toast / 状态上报
-  ipcMain.on('overlay:set-always-on-top', (_e, on) => { if (overlayWin) overlayWin.setAlwaysOnTop(!!on, 'floating'); });
-  ipcMain.on('overlay:hide', () => { if (overlayWin) overlayWin.hide(); });
-  ipcMain.on('overlay:open-external', (_e, url) => { if (typeof url === 'string' && /^https?:\/\//.test(url)) shell.openExternal(url); });
-  ipcMain.on('overlay:toast', (_e, msg) => { try { if (win && !win.isDestroyed()) win.webContents.send('overlay-toast', String(msg)); } catch {} });
-  ipcMain.on('overlay:state', (_e, s) => { saveOverlayState({ ...loadOverlayState(), collapsed: !!(s && s.collapsed), pinned: !!(s && s.pinned) }); });
+  // 页面加载完成后按持久化状态校正高度（渲染进程状态尚未上报时也不会错位）
+  overlayWin.webContents.on('did-finish-load', applyOverlayCollapsed);
   return overlayWin;
 }
 

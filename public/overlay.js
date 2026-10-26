@@ -50,32 +50,40 @@
   themeInit();
 
 
-  /* ===== 折叠/展开状态（记忆） ===== */
-  const LS = 'devdeck_overlay';
-  function memGet() { try { return JSON.parse(localStorage.getItem(LS) || '{}'); } catch { return {}; } }
-  function memSet(o) { try { localStorage.setItem(LS, JSON.stringify(o)); } catch {} }
-  const mem = memGet();
-
-  let collapsed = !!mem.collapsed;
+  /* ===== 折叠/展开 + 置顶：状态以主进程 overlay-state.json 为唯一真相 ===== */
+  let collapsed = false;
+  let pinned = true;
   const card = $('card');
 
   function applyCollapsed() {
     card.classList.toggle('collapsed', collapsed);
     $('toggle').textContent = collapsed ? '▸' : '▾';
   }
-  $('toggle').addEventListener('click', e => {
-    collapsed = !collapsed; mem.collapsed = collapsed; memSet(mem); applyCollapsed();
-  });
-  applyCollapsed();
-
-  /* ===== 置顶开关 ===== */
-  let pinned = !!mem.pinned;
   function applyPinned() { $('pin').classList.toggle('on', pinned); $('pin').textContent = pinned ? '📌' : '📍'; }
-  $('pin').addEventListener('click', () => {
-    pinned = !pinned; mem.pinned = pinned; memSet(mem); applyPinned();
-    if (window.overlayAPI) window.overlayAPI.setAlwaysOnTop(pinned);
+  function pushState(patch) { try { if (window.overlayAPI && window.overlayAPI.reportPos) window.overlayAPI.reportPos(patch); } catch {} }
+
+  $('toggle').addEventListener('click', () => {
+    collapsed = !collapsed;
+    applyCollapsed();
+    pushState({ collapsed }); // 主进程据此同步窗口高度
   });
-  applyPinned();
+  $('pin').addEventListener('click', () => {
+    pinned = !pinned;
+    applyPinned();
+    if (window.overlayAPI) window.overlayAPI.setAlwaysOnTop(pinned);
+    pushState({ pinned });
+  });
+
+  // 启动时从主进程读一次：避免"按钮显示未置顶、窗口实际置顶"这类错位
+  (async function initOverlayState() {
+    try {
+      const st = (window.overlayAPI && window.overlayAPI.getState) ? await window.overlayAPI.getState() : null;
+      if (st && typeof st.collapsed === 'boolean') collapsed = st.collapsed;
+      if (st && typeof st.pinned === 'boolean') pinned = st.pinned;
+    } catch {}
+    applyCollapsed();
+    applyPinned();
+  })();
 
   /* ===== 隐藏 ===== */
   $('close').addEventListener('click', () => { if (window.overlayAPI) window.overlayAPI.hide(); });
@@ -206,10 +214,7 @@
     }));
   }
 
-  // 位置上报给主进程持久化
-  function reportPos() { if (window.overlayAPI && window.overlayAPI.reportPos) window.overlayAPI.reportPos({ collapsed, pinned }); }
-  setInterval(reportPos, 4000);
-
+  // 位置由主进程在窗口 move 时持久化；折叠/置顶在切换时按需上报，不再每 4s 轮写状态文件
   fetchServices();
   loadProjects();
   setInterval(() => { if (!document.hidden) fetchServices(); }, 5000);

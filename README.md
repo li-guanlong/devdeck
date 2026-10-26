@@ -32,12 +32,13 @@ pnpm test          # node --test tests，每个测试文件独立子进程（推
 pnpm test:inproc   # 受限环境：公司电脑若禁止子进程/命名管道，用单进程顺序跑
 ```
 
-覆盖四层（共 20 个用例）：
+覆盖五层（共 29 个用例）：
 
 - `tests/sanitize.test.js` — 转义原语（`&`/`<`/`>`/引号、null 归一）
 - `tests/render-xss.test.js` — 把真实 `sanitize.js` + `app.js` 放进 vm，验证恶意项目配置渲染后不产生标签
 - `tests/request-guard.test.js` — 控制面 Host/Origin 校验（DNS rebinding、跨站请求）
-- `tests/api.test.js` — 真实加载 `server.js`（`child_process` 打桩，不启动真实进程），验证 403 拦截、CRUD、导入合并、kill 白名单、启动命令下发
+- `tests/store.test.js` — 配置原子写、`.bak` 回滚、坏 JSON 隔离
+- `tests/api.test.js` — 真实加载 `server.js`（`child_process` 打桩，不启动真实进程），验证 403 拦截、CRUD、导入合并、kill 白名单、启动命令下发、静态项目参数、spawn 失败兜底
 
 ## 打包分发（v1 流程）
 
@@ -97,6 +98,16 @@ pnpm run dist:verify   # 打包 + 自动验包，断言 app.asar.unpacked\static
 - 修复：悬浮卡「终止/重启」结果提示丢失（`overlay-toast` 无人监听）——主窗口接上监听，悬浮卡也内置 toast
 - 修复：服务端配置与 `localStorage` 双真相导致删除后仍显示、启动报 404——改为服务端唯一真相
 - 新增：`tests/`（20 个用例）与 `pnpm test` / `pnpm test:inproc`
+
+## P1 稳定性修复（分支 fix/p1-stability）
+
+- 配置持久化改为**原子写 + `.bak` + 损坏隔离**（`lib/store.js`）：坏 JSON 不再静默清零，坏文件改名留证并用上一版恢复
+- 启动健壮性：目录不存在直接给可读错误；`spawn` 同步抛错与异步 `error` 都有人接（不再拖垮服务）；静态项目不再被追加 `--port`
+- 悬浮卡：折叠时同步窗口高度（透明区域不再挡住桌面点击）；折叠/置顶以 `overlay-state.json` 为唯一状态源，去掉每 4 秒的状态轮写
+- 一键启动改为**并行等待**各项目就绪，结果里区分「端口被占失败」和「超时未监听」
+- 默认端口统一为 `3300`（与 README / 页面提示一致，`PORT` 环境变量仍可覆盖）
+- 进程采样不再重复启动，`exec` 同步异常只记 `boot.log`，不影响服务启动
+- 测试增至 29 个用例（新增 `tests/store.test.js` 与 4 条 API 回归）
 
 ## v1.0 变更
 

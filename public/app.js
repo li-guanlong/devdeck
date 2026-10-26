@@ -773,19 +773,25 @@ async function startAll() {
   const ids = [...customSel];
   if (!ids.length) { toast('请先勾选要启动的本地项目', 'warn'); return; }
   if (b) { b.disabled = true; b.classList.add('busy'); b.innerHTML = '<span class="spin"></span>启动中…'; }
-  toast('已下发全部启动命令，逐个等待服务就绪…', 'info');
+  toast('已下发全部启动命令，并行等待服务就绪…', 'info');
   try {
     const beforeAll = await svcPorts(); // 快照必须在启动前，否则“新端口”判定失效
     const r = await fetch('/api/start-all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) }); const j = await r.json();
     const items = Array.isArray(j) ? j : [];
-    for (const x of items) {
-      if (!x.ok) { continue; }
+    const okItems = items.filter(x => x.ok);
+    // 并行等待各自端口就绪：串行 await 会让"全部启动"卡到分钟级
+    const waits = await Promise.all(okItems.map(x => {
       const cfg = lsGet().find(c => c.id === x.id);
-      const w = await waitPort(cfg && cfg.port, beforeAll, 8);
-    }
-    const okN = items.filter(x => x.ok).length;
+      return waitPort(cfg && cfg.port, beforeAll, 8).then(w => ({ name: x.name, ok: !!w.ok }));
+    }));
+    const readyN = waits.filter(w => w.ok).length;
+    const notReady = waits.filter(w => !w.ok).map(w => w.name);
     const fails = items.filter(x => !x.ok);
-    toast(`一键启动完成：成功 ${okN}/${items.length}` + (fails.length ? ('；失败：' + fails.map(x => x.name + (x.suggestPort ? `(端口被占，可改 :${x.suggestPort})` : (x.error ? '（' + x.error + '）' : ''))).join('、')) : ''), okN === items.length ? 'ok' : 'warn', 7000);
+    toast(
+      `一键启动完成：下发成功 ${okItems.length}/${items.length}，${readyN}/${okItems.length} 个已在监听` +
+      (fails.length ? ('；失败：' + fails.map(x => x.name + (x.suggestPort ? `(端口被占，可改 :${x.suggestPort})` : (x.error ? '（' + x.error + '）' : ''))).join('、')) : '') +
+      (notReady.length ? ('；未就绪：' + notReady.join('、')) : ''),
+      (fails.length || notReady.length) ? 'warn' : 'ok', 8000);
     switchTab('run');
   } catch (e) { toast(`请求失败，没连上 DevDeck 服务：${e.message}`, 'err', 6000); }
   finally { if (b) { b.classList.remove('busy'); b.innerHTML = old || '▶ 全部启动'; } syncCustomSel(); fetchAllData(true); }
