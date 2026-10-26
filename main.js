@@ -4,7 +4,7 @@ const net = require('net');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { nearestEdge, dockBounds, peekBounds, clamp } = require('./lib/overlay-geometry');
+const { nearestEdge, dockBounds, peekBounds, clamp, pointInBounds } = require('./lib/overlay-geometry');
 
 // 启动诊断日志（%TEMP%/devdeck-boot.log）
 const BOOT_LOG = path.join(os.tmpdir(), 'devdeck-boot.log');
@@ -46,22 +46,27 @@ let isQuiting = false;
 let overlayWin = null; // 桌面悬浮卡片窗口
 const APP_ICON = path.join(__dirname, 'assets', 'favicon-256.png'); // 任务栏/托盘图标（取自 favicon.svg）
 const OVERLAY_PRELOAD = path.join(__dirname, 'overlay-preload.js');
-const OVERLAY_W = 300, OVERLAY_H = 400, OVERLAY_COLLAPSED_H = 68; // 折叠态只留一条状态栏的高度
+const OVERLAY_W = 300, OVERLAY_H = 400; // 悬浮卡宽度固定 300；高度按内容自适应（最大 400，超出滚动）
+const OVERLAY_MIN_H = 100;              // 自适应最小高度：只有头部+空列表+底部状态
 const SNAP_PX = 26;                 // 距屏幕工作区边缘多少像素内触发吸附
 const SNAP_DOCK_DELAY = 450;        // 贴边后多久缩成极简条
 // 停靠条尺寸：Windows 对窗口有最小尺寸（实测 32×38），竖条 32 宽、横条 38 高；可见的只是中间那条细线
 const DOCK_TAB = { vertical: { w: 32, h: 120 }, horizontal: { w: 120, h: 38 } };
-const PEEK_GAP = 6;                 // 悬停展开时卡片与屏幕边的间距
-const HOVER_INTENT_MS = 180;        // 悬停意图延迟：避免鼠标扫过屏幕边缘就弹出卡片
+const PEEK_GAP = 6;                 // 点击展开时卡片与屏幕边的间距
+const HOVER_POLL_MS = 120;          // 停靠/展开态用全局光标轮询（展开后靠它判断"离开即收起"）
+const HOVER_PAD = 10;              // 光标距停靠条多少像素内算"悬停"
 
-// 悬浮卡形态：normal（完整卡片）/ docked（贴边极简条）/ peek（停靠后悬停展开）
+// 悬浮卡形态：normal（完整卡片）/ docked（贴边极简条）/ peek（点击后展开）
 let overlayMode = 'normal';
 let dockEdge = null;   // left | right | top | bottom
 let tabBounds = null;  // 极简条位置，peek 收起时回到这里
+let autoHeight = OVERLAY_H; // 渲染端实测的内容高度（自适应）
 let hoverInside = false;
-let ignoreHoverUntil = 0; // 刚停靠时短暂忽略悬停，避免"缩成条→立刻又展开"的抖动
+let hoverPoll = null;
+let lastHoverNear = null; // 上次上报的"靠近"状态（null=未上报），避免重复 IPC
 let dockTimer = null, peekTimer = null, moveTimer = null, posTimer = null, boundsTimer = null;
 let lastProgrammaticAt = 0; // 程序化 setBounds 会触发 move 事件，用它区分"用户拖动"
+let suppressSnapUntil = 0;  // 自适应改高度后短暂忽略吸附，避免"内容一变就自动贴边停靠"
 
 function overlayStatePath() {
   // 打包后迁 userData（tmpdir 会被系统清理导致位置记忆丢失）；开发模式保持 tmp 避免污染源码目录
@@ -72,7 +77,7 @@ function overlayStatePath() {
 } // 悬浮窗位置/折叠/置顶记忆
 
 function loadOverlayState() {
-  const base = { x: null, y: null, pinned: true, collapsed: false, docked: false, edge: null };
+  const base = { x: null, y: null, pinned: true, docked: false, edge: null };
   try {
     const f = overlayStatePath();
     if (fs.existsSync(f)) {
@@ -106,17 +111,26 @@ function createWindow() {
   win.on('resize', () => { setMoving(true); clearTimeout(moveTimer); moveTimer = setTimeout(() => setMoving(false), 350); });
 }
 
-// 折叠/展开时同步窗口高度：透明窗口不会让点击穿透，不缩窗会一直挡着桌面。
+// 高度自适应：窗口高度跟随内容变化，同时把窗口限制在工作区内。
 // 踩坑记录（Windows 实测）：非 resizable 的透明无边框窗口上 setSize() 是空操作，
 // 必须用 setBounds()；且系统会给这类窗口 +1px，所以比较要留容差，否则会反复重设。
 function setOverlayHeight(h) {
   if (!overlayWin || overlayWin.isDestroyed()) return;
+  if (overlayMode !== 'normal') return; // 停靠/展开态尺寸由停靠几何接管
   const b = overlayWin.getBounds();
-  // 宽度用设计常量：透明窗口的 getBounds() 会带 1px 虚边，回写 b.width 会让窗口每折叠一次就宽 1px
-  const target = { x: b.x, y: b.y, width: OVERLAY_W, height: Math.max(48, Math.round(h)) };
-  const widthOk = Math.abs(b.width - OVERLAY_W) <= 2; // 见下：透明窗口实测会 +1px，留容差
-  if (widthOk && Math.abs(b.height - target.height) <= 2) return;
-  try { overlayWin.setBounds(target); } catch {}
+  const wa = overlayWorkArea();
+  const targetH = Math.max(OVERLAY_MIN_H, Math.min(OVERLAY_H, Math.round(h || OVERLAY_H)));
+  // 底部越界时上移，避免变高后掉出屏幕
+  let y = b.y;
+  if (y + targetH > wa.y + wa.height) y = wa.y + wa.height - targetH;
+  if (y < wa.y) y = wa.y;
+  // 宽度用设计常量：透明窗口的 getBounds() 会带 1px 虚边，回写 b.width 会让窗口每次重设都变宽
+  const target = { x: b.x, y: Math.round(y), width: OVERLAY_W, height: targetH };
+  const widthOk = Math.abs(b.width - OVERLAY_W) <= 2; // 透明窗口实测会 +1px，留容差
+  if (widthOk && Math.abs(b.height - target.height) <= 2 && Math.abs(b.y - target.y) <= 1) return;
+  suppressSnapUntil = Date.now() + 900; // 自适应改高度不算"拖动到边缘"，别触发自动停靠
+  try { applyOverlayBounds(target); } catch { try { overlayWin.setBounds(target); } catch {} }
+  try { saveOverlayState({ ...loadOverlayState(), x: target.x, y: target.y }); } catch {}
   // 兜底：极端环境（某些 DPI/主题）仍拦 setBounds 时，临时放开 resizable 再设
   if (Math.abs(overlayWin.getBounds().height - target.height) > 2) {
     try {
@@ -129,14 +143,7 @@ function setOverlayHeight(h) {
   bootLog(`OVERLAY HEIGHT ${b.height} -> ${overlayWin.getBounds().height} (target ${target.height})`);
 }
 
-function applyOverlayCollapsed() {
-  if (!overlayWin || overlayWin.isDestroyed()) return;
-  if (overlayMode !== 'normal') return; // 停靠/展开态由停靠几何接管
-  const st = loadOverlayState();
-  setOverlayHeight(st.collapsed ? OVERLAY_COLLAPSED_H : OVERLAY_H);
-}
-
-// ===== 停靠：吸附 → 极简边缘条 → 悬停展开 =====
+// ===== 停靠：吸附 → 极简边缘条 → 点击展开 =====
 function overlayWorkArea() {
   try { return screen.getDisplayMatching(overlayWin.getBounds()).workArea; }
   catch { try { return screen.getPrimaryDisplay().workArea; } catch { return { x: 0, y: 0, width: 1920, height: 1080 }; } }
@@ -151,11 +158,50 @@ function applyOverlayBounds(b) {
   boundsTimer = setTimeout(() => { lastProgrammaticAt = 0; }, 600);
 }
 
-// 停靠条是"透明但占位"的窗口，必须开鼠标穿透，否则会挡住边缘的桌面点击；
-// forward:true 让渲染进程仍能收到 mousemove，从而用悬停触发展开。
+// 停靠条复用了同一套窗口穿透开关：普通态不穿透；停靠态也不穿透（要接收点击展开）。
+// 停靠条窗口很小（32×120 / 120×38），挡住的边缘区域可接受。
 function overlaySetClickThrough(on) {
   if (!overlayWin || overlayWin.isDestroyed()) return;
-  try { overlayWin.setIgnoreMouseEvents(!!on, { forward: true }); } catch {}
+  try { overlayWin.setIgnoreMouseEvents(!!on, { forward: false }); } catch {}
+}
+
+function cursorNear(bounds, pad) {
+  try { return pointInBounds(bounds, screen.getCursorScreenPoint(), pad); }
+  catch { return false; }
+}
+
+function startHoverPoll() {
+  if (hoverPoll) return;
+  hoverPoll = setInterval(checkHover, HOVER_POLL_MS);
+}
+
+function stopHoverPoll() {
+  if (hoverPoll) { clearInterval(hoverPoll); hoverPoll = null; }
+  clearTimeout(peekTimer);
+  hoverInside = false;
+  lastHoverNear = null;
+}
+
+// 轮询全局光标：停靠态只更新"悬停高亮"（不再自动展开，展开改为点击细条）；
+// 展开态则判断光标是否离开卡片，离开后延时收起。
+function checkHover() {
+  if (!overlayWin || overlayWin.isDestroyed()) return;
+  if (overlayMode === 'docked' && tabBounds) {
+    notifyOverlayHover(cursorNear(tabBounds, HOVER_PAD));
+    return;
+  }
+  if (overlayMode === 'peek') {
+    const inside = cursorNear(overlayWin.getBounds(), 2);
+    if (inside) {
+      hoverInside = true;
+      clearTimeout(peekTimer);
+    } else if (hoverInside) {
+      hoverInside = false;
+      peekTimer = setTimeout(() => {
+        if (overlayMode === 'peek' && !cursorNear(overlayWin.getBounds(), 2)) overlayPeekClose();
+      }, 500);
+    }
+  }
 }
 
 function notifyOverlayMode() {
@@ -165,10 +211,16 @@ function notifyOverlayMode() {
     overlayWin.webContents.send('overlay:mode', {
       mode: overlayMode,
       edge: dockEdge,
-      collapsed: !!st.collapsed,
       pinned: !!st.pinned
     });
   } catch {}
+}
+
+function notifyOverlayHover(near) {
+  if (!overlayWin || overlayWin.isDestroyed()) return;
+  if (near === lastHoverNear) return;
+  lastHoverNear = near;
+  try { overlayWin.webContents.send('overlay:hover-state', !!near); } catch {}
 }
 
 // 贴到指定边缘并缩成极简条
@@ -176,23 +228,26 @@ function overlayDock(edge) {
   if (!overlayWin || overlayWin.isDestroyed()) return;
   const t = dockBounds(edge, overlayWin.getBounds(), overlayWorkArea(), DOCK_TAB);
   overlayMode = 'docked'; dockEdge = edge; hoverInside = false;
-  ignoreHoverUntil = Date.now() + 700; // 停靠瞬间鼠标往往还在原位置，先别立刻展开
+  lastHoverNear = null; // 强制下一次 checkHover 重新上报，避免页面停在旧高亮
   tabBounds = t;
   clearTimeout(dockTimer);
   applyOverlayBounds(t);
-  overlaySetClickThrough(true); // 极简条不挡桌面点击，只靠 mousemove 感知悬停
+  // 细条改为"点击展开"，窗口不能再穿透，否则收不到点击；细条区域很小，挡住边缘一点可接受
+  overlaySetClickThrough(false);
+  startHoverPoll();
   saveOverlayState({ ...loadOverlayState(), docked: true, edge, x: t.x, y: t.y });
   bootLog(`OVERLAY DOCK ${edge} ${t.x},${t.y} ${t.width}x${t.height}`);
   notifyOverlayMode();
 }
 
-// 悬停展开：从极简条长成完整卡片（始终朝屏幕内侧展开）
+// 点击展开：从极简条长成完整卡片（始终朝屏幕内侧展开），高度用内容自适应值
 function overlayPeekOpen() {
   if (overlayMode !== 'docked' || !tabBounds) return;
-  const b = peekBounds(dockEdge, tabBounds, overlayWorkArea(), { w: OVERLAY_W, h: OVERLAY_H }, PEEK_GAP);
+  const cardH = Math.max(OVERLAY_MIN_H, Math.min(OVERLAY_H, Math.round(autoHeight || OVERLAY_H)));
+  const b = peekBounds(dockEdge, tabBounds, overlayWorkArea(), { w: OVERLAY_W, h: cardH }, PEEK_GAP);
   overlayMode = 'peek';
   clearTimeout(peekTimer);
-  overlaySetClickThrough(false); // 展开后恢复可交互
+  overlaySetClickThrough(false); // 展开后可交互
   applyOverlayBounds(b);
   notifyOverlayMode();
 }
@@ -201,22 +256,33 @@ function overlayPeekClose() {
   if (overlayMode !== 'peek' || !tabBounds) return;
   overlayMode = 'docked';
   applyOverlayBounds(tabBounds);
-  overlaySetClickThrough(true);
+  overlaySetClickThrough(false); // 停靠条现在也要能接收点击
+  hoverInside = false;
   notifyOverlayMode();
 }
 
-// 退出停靠：恢复完整卡片（若此前是折叠态则恢复折叠高度）
+// 退出停靠：恢复完整卡片（高度用内容自适应值）
 function overlayUndock() {
   if (!overlayWin || overlayWin.isDestroyed()) return;
   const b = overlayWin.getBounds();
   const wa = overlayWorkArea();
   const st = loadOverlayState();
-  const h = st.collapsed ? OVERLAY_COLLAPSED_H : OVERLAY_H;
+  const h = Math.max(OVERLAY_MIN_H, Math.min(OVERLAY_H, Math.round(autoHeight || OVERLAY_H)));
   overlayMode = 'normal'; dockEdge = null; tabBounds = null; hoverInside = false;
   clearTimeout(dockTimer); clearTimeout(peekTimer);
+  stopHoverPoll();
+  lastHoverNear = null;
   overlaySetClickThrough(false);
-  const x = clamp(b.x, wa.x, wa.x + wa.width - OVERLAY_W);
-  const y = clamp(b.y, wa.y, wa.y + wa.height - h);
+  let x = clamp(b.x, wa.x, wa.x + wa.width - OVERLAY_W);
+  let y = clamp(b.y, wa.y, wa.y + wa.height - h);
+  // 展开态本来贴边，直接退回浮动会被"贴边自动吸附"立刻再次吸走；向内挪一截，离开吸附区
+  const near = nearestEdge({ x, y, width: OVERLAY_W, height: h }, wa);
+  if (near.dist <= SNAP_PX) {
+    if (near.edge === 'left') x = clamp(wa.x + SNAP_PX + 8, wa.x, wa.x + wa.width - OVERLAY_W);
+    else if (near.edge === 'right') x = clamp(wa.x + wa.width - OVERLAY_W - SNAP_PX - 8, wa.x, wa.x + wa.width - OVERLAY_W);
+    else if (near.edge === 'top') y = clamp(wa.y + SNAP_PX + 8, wa.y, wa.y + wa.height - h);
+    else y = clamp(wa.y + wa.height - h - SNAP_PX - 8, wa.y, wa.y + wa.height - h);
+  }
   applyOverlayBounds({ x, y, width: OVERLAY_W, height: h });
   saveOverlayState({ ...st, docked: false, edge: null, x: Math.round(x), y: Math.round(y) });
   notifyOverlayMode();
@@ -225,6 +291,7 @@ function overlayUndock() {
 // 拖动停稳后：吸附 / 更新极简条位置 / 退出停靠
 function overlayMoveEnded() {
   if (!overlayWin || overlayWin.isDestroyed()) return;
+  if (Date.now() < suppressSnapUntil) return; // 自适应改高度期间别触发吸附
   const since = Date.now() - lastProgrammaticAt;
   if (lastProgrammaticAt && since < 600) { clearTimeout(moveTimer); moveTimer = setTimeout(overlayMoveEnded, 650 - since); return; }
   const b = overlayWin.getBounds();
@@ -261,48 +328,47 @@ function registerOverlayIpc() {
   ipcMain.on('overlay:hide', () => { if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide(); refreshTrayMenu(); });
   ipcMain.on('overlay:open-external', (_e, url) => { if (typeof url === 'string' && /^https?:\/\//.test(url)) shell.openExternal(url); });
   ipcMain.on('overlay:toast', (_e, msg) => { try { if (win && !win.isDestroyed()) win.webContents.send('overlay-toast', String(msg)); } catch {} });
-  // 只合并传来的字段：悬浮卡只发改动项，避免把另一项误写成 false（旧版把 pinned/collapsed 都强制布尔化）
+  // 只合并传来的字段：悬浮卡只发改动项，避免把另一项误写成 false
   ipcMain.on('overlay:state', (_e, s) => {
     const next = { ...loadOverlayState() };
-    if (s && typeof s.collapsed === 'boolean') next.collapsed = s.collapsed;
     if (s && typeof s.pinned === 'boolean') next.pinned = s.pinned;
     saveOverlayState(next);
-    // 只有普通形态才响应"折叠"；停靠/展开态的高度由停靠几何决定，不能被折叠逻辑改坏
-    if (s && typeof s.collapsed === 'boolean' && overlayMode === 'normal') {
-      // 渲染端会带上实测折叠高度（panel 实际高度 + 卡片上下 padding），比写死 68 更贴合字体/DPI
-      const measured = Number(s.height);
-      const h = s.collapsed
-        ? (Number.isFinite(measured) && measured >= 48 ? Math.min(measured, OVERLAY_H) : OVERLAY_COLLAPSED_H)
-        : OVERLAY_H;
-      setOverlayHeight(h);
-    }
     if (overlayWin && !overlayWin.isDestroyed()) overlayWin.setAlwaysOnTop(!!next.pinned, 'floating');
   });
-  // 悬停：极简条上进入 → 展开；离开卡片 → 延时缩回（可被再次进入取消）
-  ipcMain.on('overlay:hover', (_e, inside) => {
-    hoverInside = !!inside;
-    clearTimeout(peekTimer);
-    if (hoverInside) {
-      clearTimeout(dockTimer); // 用户正在操作，先不缩成极简条
-      if (overlayMode === 'docked') {
-        const wait = Math.max(HOVER_INTENT_MS, ignoreHoverUntil - Date.now());
-        peekTimer = setTimeout(() => { if (hoverInside && overlayMode === 'docked') overlayPeekOpen(); }, wait);
-      }
-    } else if (overlayMode === 'peek') {
-      peekTimer = setTimeout(() => { if (!hoverInside) overlayPeekClose(); }, 500);
+  // 内容高度自适应：渲染端实测高度上报，普通形态直接改窗口，展开态按新高度重排
+  ipcMain.on('overlay:auto-height', (_e, h) => {
+    const n = Number(h);
+    if (!Number.isFinite(n) || n <= 0) return;
+    autoHeight = Math.max(OVERLAY_MIN_H, Math.min(OVERLAY_H, Math.round(n)));
+    if (overlayMode === 'normal') setOverlayHeight(autoHeight);
+    else if (overlayMode === 'peek' && tabBounds) {
+      const b = peekBounds(dockEdge, tabBounds, overlayWorkArea(), { w: OVERLAY_W, h: autoHeight }, PEEK_GAP);
+      applyOverlayBounds(b);
     }
   });
-  // 悬浮卡启动时读主进程状态：形态/折叠/置顶以主进程为准
+  // 点击极简条 → 展开为卡片
+  ipcMain.on('overlay:expand', () => { if (overlayMode === 'docked') overlayPeekOpen(); });
+  // 头部"吸附"按钮：普通态吸附到最近边缘；展开/停靠态退回浮动卡片
+  ipcMain.on('overlay:dock-toggle', () => {
+    if (!overlayWin || overlayWin.isDestroyed()) return;
+    if (overlayMode === 'normal') {
+      const near = nearestEdge(overlayWin.getBounds(), overlayWorkArea());
+      overlayDock(near.edge);
+    } else {
+      overlayUndock();
+    }
+  });
+  // 悬浮卡启动时读主进程状态：形态/置顶以主进程为准
   ipcMain.handle('overlay:get-state', () => {
     const st = loadOverlayState();
-    return { pinned: !!st.pinned, collapsed: !!st.collapsed, mode: overlayMode, edge: dockEdge };
+    return { pinned: !!st.pinned, mode: overlayMode, edge: dockEdge };
   });
 }
 registerOverlayIpc();
 
 // ===================== 桌面悬浮卡片窗口 =====================
 // 无边框、置顶、透明底小窗，加载 public/overlay.html，复用 /api/node-services 轮询。
-// 形态：完整卡片（可拖动）→ 靠近屏幕边缘吸附 → 缩成极简边缘条 → 鼠标靠近自动展开。
+// 形态：完整卡片（可拖动、高度自适应）→ 靠近屏幕边缘吸附 → 缩成极简边缘条 → 点击展开。
 function createOverlay() {
   const st = loadOverlayState();
   const docked = !!(st.docked && ['left', 'right', 'top', 'bottom'].includes(st.edge));
@@ -311,7 +377,7 @@ function createOverlay() {
   const vertical = dockEdge === 'left' || dockEdge === 'right';
   const tabSize = vertical ? DOCK_TAB.vertical : DOCK_TAB.horizontal;
   const width = docked ? tabSize.w : OVERLAY_W;
-  const height = docked ? tabSize.h : (st.collapsed ? OVERLAY_COLLAPSED_H : OVERLAY_H);
+  const height = docked ? tabSize.h : OVERLAY_H;
   let wa = { x: 0, y: 0, width: 1920, height: 1080 };
   try { wa = screen.getPrimaryDisplay().workArea; } catch {}
   const x = Number.isFinite(st.x) ? st.x : (wa.x + wa.width - OVERLAY_W - 24);
@@ -327,7 +393,7 @@ function createOverlay() {
   });
   overlayWin.setAlwaysOnTop(!!st.pinned, 'floating');
   overlayWin.loadURL(URL + 'overlay.html'); // 走 HTTP 同源加载，overlay 内相对路径 fetch 才能工作
-  if (docked) overlaySetClickThrough(true); // 启动即停靠：一开始就鼠标穿透
+  if (docked) { overlaySetClickThrough(false); startHoverPoll(); } // 启动即停靠：点击展开 + 光标轮询
 
   // 拖动：停稳后判定吸附/停靠；位置持久化做节流，避免拖动过程中狂写状态文件
   overlayWin.on('move', () => {
@@ -343,10 +409,11 @@ function createOverlay() {
     }, 900);
   });
   overlayWin.on('close', (e) => { if (!isQuiting) { e.preventDefault(); overlayWin.hide(); } }); // 关悬浮窗→隐藏
-  overlayWin.on('closed', () => { overlayWin = null; });
+  overlayWin.on('hide', () => stopHoverPoll()); // 隐藏时停掉光标轮询，避免后台误展开
+  overlayWin.on('show', () => { if (overlayMode === 'docked' || overlayMode === 'peek') startHoverPoll(); });
+  overlayWin.on('closed', () => { overlayWin = null; stopHoverPoll(); });
   overlayWin.webContents.on('did-finish-load', () => {
-    notifyOverlayMode();     // 告诉页面当前形态（极简条 / 完整卡片）
-    applyOverlayCollapsed(); // 普通形态下按折叠状态校正高度
+    notifyOverlayMode(); // 告诉页面当前形态（极简条 / 完整卡片）；高度由页面实测后回传自适应
   });
   return overlayWin;
 }

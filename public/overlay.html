@@ -346,27 +346,15 @@
       font-family: Consolas, monospace;
     }
 
-    /* 折叠模式：只有一个小状态条 */
-    #card.collapsed .panel {
-      height: auto;
-    }
+    /* 折叠模式已移除：窗口高度改为按内容自适应，见 main.js 的 setOverlayHeight */
 
-    #card.collapsed .list,
-    #card.collapsed .foot {
-      display: none;
-    }
-
-    #card.collapsed .head .ttl {
-      display: none;
-    }
-
-    /* 折叠按钮与头部 hbtn 同尺寸，折叠态下同样可见 */
-    .collapse-toggle {
+    /* 吸附按钮与头部 hbtn 同尺寸 */
+    .dock-toggle {
       font-size: 14px;
       line-height: 1;
     }
 
-    .collapse-toggle:hover {
+    .dock-toggle:hover {
       color: var(--acc);
       border-color: var(--btn-hover-border);
     }
@@ -397,12 +385,13 @@
       transform: translateX(-50%) translateY(0);
     }
 
-    /* ===== 极简停靠形态：贴边只剩一条窄条，鼠标靠近自动展开 ===== */
+    /* ===== 极简停靠形态：贴边一条渐变胶囊 + 中间高光，鼠标靠近自动展开 ===== */
     .dock-tab {
       display: none;
       position: fixed;
       inset: 0;
-      -webkit-app-region: drag; /* 贴着边缘也能拖动换边 */
+      cursor: pointer;
+      -webkit-app-region: no-drag; /* 细条改为点击展开，不能再吞掉鼠标事件 */
     }
 
     body.docked-ui #card { display: none; }
@@ -416,28 +405,81 @@
       top: 50%;
       transform: translate(-50%, -50%);
       border-radius: 999px;
-      background: linear-gradient(180deg, #22d3ee, #a5b4fc);
-      box-shadow: 0 0 10px rgba(34, 211, 238, .55);
+      background: linear-gradient(180deg, #67e8f9 0%, #22d3ee 30%, #6366f1 72%, #a78bfa 100%);
+      box-shadow:
+        0 0 6px rgba(34, 211, 238, .55),
+        0 0 18px rgba(99, 102, 241, .35),
+        inset 0 0 3px rgba(255, 255, 255, .7);
+      opacity: .9;
+      transition: width .18s ease, height .18s ease, opacity .18s ease, box-shadow .18s ease, transform .18s ease;
+      animation: dockBreathe 3.6s ease-in-out infinite;
+    }
+
+    /* 胶囊中间的一道细高光，让"极简条"更像一个可抓的把手 */
+    .dock-tab::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .92);
+      box-shadow: 0 0 6px rgba(255, 255, 255, .85);
       opacity: .8;
-      transition: opacity .18s, box-shadow .18s;
+      transition: opacity .18s ease, transform .18s ease, box-shadow .18s ease;
     }
 
     body.dock-left .dock-tab::before,
     body.dock-right .dock-tab::before {
-      width: 5px;
-      height: 72%;
+      width: 8px;
+      height: 76px;
+    }
+
+    body.dock-left .dock-tab::after,
+    body.dock-right .dock-tab::after {
+      width: 2px;
+      height: 22px;
     }
 
     body.dock-top .dock-tab::before,
     body.dock-bottom .dock-tab::before {
-      width: 72%;
-      height: 5px;
-      background: linear-gradient(90deg, #22d3ee, #a5b4fc);
+      width: 76px;
+      height: 8px;
+      background: linear-gradient(90deg, #67e8f9 0%, #22d3ee 30%, #6366f1 72%, #a78bfa 100%);
     }
 
-    .dock-tab:hover::before {
+    body.dock-top .dock-tab::after,
+    body.dock-bottom .dock-tab::after {
+      width: 22px;
+      height: 2px;
+    }
+
+    /* 悬停高亮：原生 :hover + 主进程光标轮询（is-hover）双保险 */
+    .dock-tab:hover::before,
+    .dock-tab.is-hover::before {
       opacity: 1;
-      box-shadow: 0 0 16px rgba(34, 211, 238, .9);
+      animation-play-state: paused;
+      transform: translate(-50%, -50%) scale(1.18);
+      box-shadow:
+        0 0 10px rgba(34, 211, 238, .8),
+        0 0 26px rgba(99, 102, 241, .6),
+        inset 0 0 3px rgba(255, 255, 255, .9);
+    }
+
+    .dock-tab:hover::after,
+    .dock-tab.is-hover::after {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1.2);
+      box-shadow: 0 0 10px rgba(255, 255, 255, .95);
+    }
+
+    @keyframes dockBreathe {
+      0%, 100% { opacity: .82; }
+      50% { opacity: 1; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .dock-tab::before { animation: none; }
     }
   </style>
 </head>
@@ -450,7 +492,7 @@
         <span class="ttl">DEV<span style="color:var(--acc)">·</span>DECK</span>
         <span class="cnt" id="cnt">0</span>
         <span class="spacer"></span>
-        <button class="hbtn collapse-toggle" id="toggle" title="折叠/展开">▾</button>
+        <button class="hbtn dock-toggle" id="dockBtn" title="吸附到屏幕边缘">🧲</button>
         <button class="hbtn theme" id="theme" title="切换主题">🌙</button>
         <button class="hbtn pin" id="pin" title="置顶开关">📌</button>
         <button class="hbtn" id="close" title="隐藏悬浮卡片">✕</button>
@@ -464,7 +506,7 @@
     </div>
   </div>
 
-  <div class="dock-tab" id="dockTab" title="DevDeck · 悬停展开" aria-hidden="true"></div>
+  <div class="dock-tab" id="dockTab" title="DevDeck · 点击展开" aria-hidden="true"></div>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 

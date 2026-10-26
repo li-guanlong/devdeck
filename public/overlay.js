@@ -50,22 +50,16 @@
   themeInit();
 
 
-  /* ===== 折叠/展开 + 置顶：状态以主进程 overlay-state.json 为唯一真相 ===== */
-  let collapsed = false;
+  /* ===== 置顶 + 吸附：状态以主进程 overlay-state.json 为唯一真相 ===== */
   let pinned = true;
   const card = $('card');
 
-  function applyCollapsed() {
-    card.classList.toggle('collapsed', collapsed);
-    $('toggle').textContent = collapsed ? '▸' : '▾';
-  }
   function applyPinned() { $('pin').classList.toggle('on', pinned); $('pin').textContent = pinned ? '📌' : '📍'; }
   function pushState(patch) { try { if (window.overlayAPI && window.overlayAPI.reportPos) window.overlayAPI.reportPos(patch); } catch {} }
 
-  /* ===== 形态：normal（完整卡片）/ docked（贴边极简条）/ peek（停靠后悬停展开） ===== */
+  /* ===== 形态：normal（完整卡片）/ docked（贴边极简条）/ peek（点击展开） ===== */
   let mode = 'normal';
   let dockEdge = null;
-  let insideWindow = false;
 
   function applyMode(m) {
     const st = m || {};
@@ -74,33 +68,50 @@
     document.body.classList.toggle('docked-ui', mode === 'docked');
     ['left', 'right', 'top', 'bottom'].forEach(e => document.body.classList.remove('dock-' + e));
     if (mode === 'docked' && dockEdge) document.body.classList.add('dock-' + dockEdge);
-    // 停靠/展开态隐藏手动折叠按钮：那里的高度由停靠几何决定，折叠会打架
-    const t = $('toggle');
-    if (t) t.style.display = mode === 'normal' ? '' : 'none';
-    if (mode === 'normal') applyCollapsed();
-    else { card.classList.remove('collapsed'); if (t) t.textContent = '▾'; }
-    insideWindow = false; // 形态切换后重新判定鼠标是否在窗内（等下一次 mousemove/mouseenter）
+    // 吸附按钮：普通态=吸附到最近边缘；展开态=退回浮动卡片
+    const t = $('dockBtn');
+    if (t) {
+      t.textContent = (mode === 'normal') ? '🧲' : '⇱';
+      t.title = (mode === 'normal') ? '吸附到屏幕边缘' : '取消吸附，恢复浮动';
+    }
+    // 极简条高亮由主进程 hover 状态驱动，形态切换时先清掉旧高亮
+    const dt = $('dockTab');
+    if (dt) dt.classList.remove('is-hover');
+    if (mode !== 'docked') scheduleAutoHeight(); // 卡片可见时按内容自适应高度
   }
 
-  // 折叠后主进程要把窗口缩到"刚好包住头部"。写死高度会随字体/DPI 出现留白或裁切，
-  // 所以在折叠态实测面板高度（加 #card 的上下 padding）报给主进程。
-  function measureCollapsedHeight() {
+  // 内容高度自适应：按实际子元素高度求和（list 是 flex:1，scrollHeight 会被拉满，不能直接量）
+  let autoHeightTimer = null;
+  let hasRendered = false;
+  function scheduleAutoHeight() {
+    clearTimeout(autoHeightTimer);
+    autoHeightTimer = setTimeout(reportAutoHeight, 30);
+  }
+  function reportAutoHeight() {
+    if (mode === 'docked' || !hasRendered) return;
     try {
       const panel = document.querySelector('#card .panel');
-      if (!panel) return 0;
-      const cs = getComputedStyle(card);
-      const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-      return Math.ceil(panel.getBoundingClientRect().height + pad + 1); // +1：Windows 会再补 1px
-    } catch { return 0; }
+      if (!panel) return;
+      const head = document.querySelector('#card .head');
+      const foot = document.querySelector('#card .foot');
+      const box = $('list');
+      const csList = getComputedStyle(box);
+      let listH = (parseFloat(csList.paddingTop) || 0) + (parseFloat(csList.paddingBottom) || 0);
+      Array.from(box.children).forEach(ch => {
+        const r = ch.getBoundingClientRect();
+        const cm = getComputedStyle(ch);
+        listH += r.height + (parseFloat(cm.marginTop) || 0) + (parseFloat(cm.marginBottom) || 0);
+      });
+      const csCard = getComputedStyle(card);
+      const pad = (parseFloat(csCard.paddingTop) || 0) + (parseFloat(csCard.paddingBottom) || 0);
+      // +2 是 panel 上下边框，+1 留给 Windows 透明窗口的 1px 虚边
+      const total = Math.ceil(pad + (head ? head.offsetHeight : 0) + listH + (foot ? foot.offsetHeight : 0) + 2 + 1);
+      if (window.overlayAPI && window.overlayAPI.setAutoHeight) window.overlayAPI.setAutoHeight(total);
+    } catch {}
   }
 
-  $('toggle').addEventListener('click', () => {
-    if (mode !== 'normal') return; // 停靠/展开态不响应手动折叠
-    collapsed = !collapsed;
-    applyCollapsed();
-    // 折叠：带上实测高度；展开：交给主进程用设计高度 400
-    if (collapsed) pushState({ collapsed, height: measureCollapsedHeight() });
-    else pushState({ collapsed });
+  $('dockBtn').addEventListener('click', () => {
+    if (window.overlayAPI && overlayAPI.toggleDock) overlayAPI.toggleDock();
   });
   $('pin').addEventListener('click', () => {
     pinned = !pinned;
@@ -109,33 +120,30 @@
     pushState({ pinned });
   });
 
+  // 点击极简条 → 展开为卡片（停靠态不再靠悬停误触）
+  const dockTabEl = $('dockTab');
+  if (dockTabEl) dockTabEl.addEventListener('click', () => {
+    if (window.overlayAPI && overlayAPI.expand) overlayAPI.expand();
+  });
+
   // 启动时从主进程读一次：避免"按钮显示未置顶、窗口实际置顶"这类错位
   (async function initOverlayState() {
     let st = null;
     try {
       st = (window.overlayAPI && window.overlayAPI.getState) ? await window.overlayAPI.getState() : null;
-      if (st && typeof st.collapsed === 'boolean') collapsed = st.collapsed;
       if (st && typeof st.pinned === 'boolean') pinned = st.pinned;
     } catch {}
     applyPinned();
     applyMode(st || { mode: 'normal' }); // 形态以主进程为准（可能是启动即停靠）
-    // 只有普通形态需要把实测折叠高度补报给主进程
-    if (collapsed && mode === 'normal') pushState({ collapsed: true, height: measureCollapsedHeight() });
   })();
 
-  // 主进程形态变更：吸附停靠 / 悬停展开 / 退出停靠
+  // 主进程形态变更：吸附停靠 / 点击展开 / 退出停靠
   if (window.overlayAPI && overlayAPI.onMode) overlayAPI.onMode(applyMode);
-
-  // 鼠标进入/离开窗口：极简条靠它"靠近即展开、离开即缩回"
-  function reportHover(v) {
-    if (v === insideWindow) return;
-    insideWindow = v;
-    try { if (window.overlayAPI && overlayAPI.hover) overlayAPI.hover(v); } catch {}
-  }
-  document.addEventListener('mouseenter', () => reportHover(true));
-  document.addEventListener('mouseleave', () => reportHover(false));
-  // 窗口在原地缩放/形态切换时不会补发 mouseenter，用 mousemove 兜底
-  document.addEventListener('mousemove', () => reportHover(true), { passive: true });
+  // 主进程 hover 状态 → 驱动极简条的悬停高亮
+  if (window.overlayAPI && overlayAPI.onHover) overlayAPI.onHover((v) => {
+    const tab = $('dockTab');
+    if (tab) tab.classList.toggle('is-hover', !!v);
+  });
 
   /* ===== 隐藏 ===== */
   $('close').addEventListener('click', () => { if (window.overlayAPI) window.overlayAPI.hide(); });
@@ -179,9 +187,10 @@
   }
 
   function render(list) {
+    hasRendered = true;
     $('cnt').textContent = list.length;
     const box = $('list');
-    if (!list.length) { box.innerHTML = '<div class="empty">暂无运行中的 dev server</div>'; return; }
+    if (!list.length) { box.innerHTML = '<div class="empty">暂无运行中的 dev server</div>'; scheduleAutoHeight(); return; }
     box.innerHTML = list.map((s, i) => {
       const addr = (s.urls || []).find(u => u.includes('localhost')) || (s.urls || [])[0] || '';
       const rawName = String(dispName(s) || '');           // 原始值：只用于比较，不直接进 DOM
@@ -264,9 +273,10 @@
       } catch (e) { toast('重启请求失败：' + e.message); }
       finally { b.disabled = false; b.textContent = old; }
     }));
+    scheduleAutoHeight(); // 列表内容变化后重新计算窗口高度
   }
 
-  // 位置由主进程在窗口 move 时持久化；折叠/置顶在切换时按需上报，不再每 4s 轮写状态文件
+  // 位置由主进程在窗口 move 时持久化；置顶在切换时按需上报，不再每 4s 轮写状态文件
   fetchServices();
   loadProjects();
   setInterval(() => { if (!document.hidden) fetchServices(); }, 5000);

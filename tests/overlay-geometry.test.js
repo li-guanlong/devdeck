@@ -1,7 +1,7 @@
 // 悬浮卡停靠几何：吸附判定 / 停靠条位置 / 悬停展开位置（含多屏工作区偏移）
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { nearestEdge, dockBounds, peekBounds } = require('../lib/overlay-geometry');
+const { nearestEdge, dockBounds, peekBounds, pointInBounds } = require('../lib/overlay-geometry');
 
 const WA = { x: 0, y: 0, width: 1920, height: 1040 }; // 1920x1080，底部 40px 任务栏
 const CARD = { w: 300, h: 400 };
@@ -83,4 +83,19 @@ test('多屏：工作区带偏移（副屏从 x=1920 开始）时坐标正确', 
   const peek = peekBounds('right', tab, wa2, CARD, 6);
   assert.equal(peek.x, 3840 - 306);
   assert.equal(nearestEdge({ x: 3540, y: 400, width: 300, height: 400 }, wa2).edge, 'right');
+});
+
+test('光标判定：命中停靠条本体与外扩 padding', () => {
+  const tab = { x: 1888, y: 500, width: 32, height: 120 };
+  assert.equal(pointInBounds(tab, { x: 1900, y: 560 }), true);
+  assert.equal(pointInBounds(tab, { x: 1884, y: 560 }, 8), true);   // 外扩范围内
+  assert.equal(pointInBounds(tab, { x: 1876, y: 560 }, 8), false);  // 超出外扩
+  assert.equal(pointInBounds(tab, { x: 1876, y: 560 }, 12), true);
+});
+
+test('光标判定：远离停靠条时不触发', () => {
+  const tab = { x: 1888, y: 500, width: 32, height: 120 };
+  assert.equal(pointInBounds(tab, { x: 1800, y: 560 }, 8), false);
+  assert.equal(pointInBounds(tab, { x: 1900, y: 300 }, 8), false);
+  assert.equal(pointInBounds(null, { x: 0, y: 0 }), false);
 });
