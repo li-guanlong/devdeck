@@ -467,12 +467,16 @@ function launch(item) {
     const isVueCli = /vue-cli-service\s+serve/.test(scriptText);
     if (!isVueCli) {
       // vue-cli-service 只认 PORT/HOST 环境变量，绝不能拼 -- 参数（devServer v3 会将其当 entry 解析导致编译失败）
+      // 透传分隔符随包管理器不同：npm / yarn / bun 会吞掉第一个 "--"，而 pnpm（8.x 实测）会把它原样透传给脚本，
+      // 于是 vite 收到的第一个参数成了 "--"，其后的 --port/--strictPort 全被当成位置参数，端口配置静默失效、
+      // 回落到默认 5173，再撞上别的项目的配置端口，最终被前端错认成别的项目名。pnpm 不加 "--" 即可。
+      const sep = /^\s*pnpm(\s|$)/i.test(item.cmd) ? ' ' : ' -- ';
       const turbo = scriptUsesTurbo(item.dir, item.cmd);
       if (turbo) {
         const hostFlag = /--host[=\s]/.test(item.cmd) ? '' : ' --host 0.0.0.0';
-        effCmd += ` -- -- --port ${port} --strictPort${hostFlag}`;
+        effCmd += `${sep}-- --port ${port} --strictPort${hostFlag}`; // turbo 还要再吃掉一层 "--" 才轮到任务
       } else {
-        effCmd += ` -- --port ${port} --strictPort`;
+        effCmd += `${sep}--port ${port} --strictPort`;
       }
     }
   }

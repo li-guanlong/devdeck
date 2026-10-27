@@ -1,5 +1,5 @@
 // DevDeck · by GLNB —— Electron 桌面壳：启动内置服务并打开窗口，关窗隐藏到托盘
-const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, shell, screen } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, shell, screen, clipboard } = require('electron');
 const net = require('net');
 const path = require('path');
 const fs = require('fs');
@@ -327,6 +327,7 @@ function registerOverlayIpc() {
   });
   ipcMain.on('overlay:hide', () => { if (overlayWin && !overlayWin.isDestroyed()) overlayWin.hide(); refreshTrayMenu(); });
   ipcMain.on('overlay:open-external', (_e, url) => { if (typeof url === 'string' && /^https?:\/\//.test(url)) shell.openExternal(url); });
+  ipcMain.on('overlay:copy-text', (_e, text) => { try { clipboard.writeText(String(text == null ? '' : text)); } catch {} });
   ipcMain.on('overlay:toast', (_e, msg) => { try { if (win && !win.isDestroyed()) win.webContents.send('overlay-toast', String(msg)); } catch {} });
   // 只合并传来的字段：悬浮卡只发改动项，避免把另一项误写成 false
   ipcMain.on('overlay:state', (_e, s) => {

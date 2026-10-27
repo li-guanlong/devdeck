@@ -26,12 +26,37 @@ function svcOps(s, m) {
   if (m) html += ` <button class="btn btn-blue" data-act="restart" data-pid="${escAttr(s.pid)}" data-id="${escAttr(m.id)}" data-name="${name}" title="先终止再按本地项目「${escAttr(m.name)}」配置重新启动">🔄 重启</button>`;
   return html;
 }
-/* 运行中服务 ↔ 本地项目匹配：命中则优先显示本地项目名称 */
+/* 目录比对统一口径：去首尾空白与尾部斜杠，正斜杠转反斜杠，小写 */
+function normDir(d) { return String(d || '').trim().replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase(); }
+/* 运行中服务 ↔ 本地项目匹配，命中则显示本地项目名称。优先级从强到弱：
+   1) 进程命令行里出现项目目录 —— 最强证据；多个命中取最长目录（避免同名前缀的父目录抢认）；
+   2) 配置端口命中 —— 但只有「唯一项目配了这个端口」时才认。
+   历史坑：配置端口没钉住（vite 回落到 5173），正好是另一个项目的配置端口，按端口先匹配就会张冠李戴，
+   连环后果是“重启”按钮也带着别人的项目配置去拉起。 */
 function matchLocal(s) {
   const items = (typeof lsGet === 'function' && lsGet()) || [];
-  return items.find(x =>
-    (x.port && (s.ports || []).includes(Number(x.port))) ||
-    (x.dir && s.command && String(s.command).toLowerCase().includes(String(x.dir).toLowerCase())));
+  const cmd = String(s.command || '').toLowerCase();
+  let best = null, bestLen = 0;
+  for (const x of items) {
+    const d = normDir(x.dir);
+    if (!d || !cmd.includes(d)) continue;
+    if (d.length > bestLen) { best = x; bestLen = d.length; }
+  }
+  if (best) return best;
+  const ports = (s.ports || []).map(Number);
+  const byPort = items.filter(x => x.port && ports.includes(Number(x.port)));
+  return byPort.length === 1 ? byPort[0] : null;
+}
+/* 反向：给某个本地项目找它的运行中服务（命令行命中目录优先；端口命中必须没被别的项目按目录认领） */
+function serviceOf(x, services) {
+  const list = services || [];
+  const d = normDir(x.dir);
+  const cmdHit = d ? list.find(s => String(s.command || '').toLowerCase().includes(d)) : null;
+  if (cmdHit) return cmdHit;
+  const portHit = list.find(s => x.port && (s.ports || []).map(Number).includes(Number(x.port)));
+  if (!portHit) return null;
+  const owner = matchLocal(portHit);
+  return (owner && String(owner.id) !== String(x.id)) ? null : portHit;
 }
 function dispName(s) {
   const m = matchLocal(s);
@@ -95,9 +120,7 @@ function paintCustomStatus(services) {
   const items = lsGet(); if (!items.length) return;
   for (const x of items) {
     const btn = customStartBtns.get(x.id); if (!btn || !document.body.contains(btn) || btn.dataset.busy) continue; // 启动进行中不抢按钮
-    const match = (services || []).find(s =>
-      (x.port && (s.ports || []).includes(Number(x.port))) ||
-      (x.dir && s.command && String(s.command).toLowerCase().includes(String(x.dir).toLowerCase())));
+    const match = serviceOf(x, services);
     if (match) {
       btn.disabled = true; btn.className = 'btn btn-green'; btn.innerHTML = '● 运行中';
       btn.title = `PID ${match.pid}${(match.ports || []).length ? '，端口 ' + match.ports.join('/') : ''}，点“运行中服务”查看 / 终止`;

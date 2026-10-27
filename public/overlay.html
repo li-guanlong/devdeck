@@ -481,6 +481,60 @@
     @media (prefers-reduced-motion: reduce) {
       .dock-tab::before { animation: none; }
     }
+    /* ===== 打开地址：卡内内联列表（左键打开 / 右键复制） ===== */
+    .item .urls {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      margin-top: 1px;
+      padding: 4px;
+      border-radius: 6px;
+      background: var(--itembg);
+      border: 1px dashed var(--item-border-hover);
+      -webkit-app-region: no-drag;
+    }
+    .item .urls[hidden] { display: none; }
+    .item .url-row {
+      -webkit-app-region: no-drag;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      color: var(--acc);
+      font-size: 10px;
+      font-family: Consolas, monospace;
+      padding: 3px 6px;
+      cursor: pointer;
+      transition: .15s;
+    }
+    .item .url-row .u {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .item .url-row .hint {
+      flex: none;
+      font-size: 9px;
+      color: var(--mut);
+      opacity: 0;
+      transition: opacity .15s;
+    }
+    .item .url-row:hover {
+      background: var(--open-bg);
+      border-color: var(--item-border-hover);
+      color: var(--txt);
+    }
+    .item .url-row:hover .hint { opacity: 1; }
+    .item .ibtn.open.on {
+      background: var(--open-bg);
+      border-color: var(--btn-hover-border);
+    }
   </style>
 </head>
 

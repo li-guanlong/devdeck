@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('overlayAPI', {
   hide: () => ipcRenderer.send('overlay:hide'),
   // 用系统默认浏览器打开外部 URL
   openExternal: (url) => ipcRenderer.send('overlay:open-external', url),
+  // 复制文本到系统剪贴板（悬浮窗里 navigator.clipboard 常被权限策略挡住，走主进程最稳）
+  copyText: (text) => ipcRenderer.send('overlay:copy-text', text),
   // 提示气泡（主进程调用，或直接回传）
   toast: (msg) => ipcRenderer.send('overlay:toast', msg),
   // 上报置顶状态（只传改动项，主进程合并后持久化）

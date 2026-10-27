@@ -7,11 +7,12 @@
 - **本地项目管理**：新增 / 编辑 / 删除 / 一键启动 / 批量启动，填目录后自动识别架构、包管理器、默认端口与启动命令（`GET /api/inspect`）。
 - **运行中服务发现**：`netstat -ano` + CIM 进程快照（含 CPU 差分、内存），自动圈定 node 服务与静态托管进程，展示监听端口与局域网 URL。
 - **静态页面托管**：无 `package.json` 的纯 HTML 目录（如大屏）走内置 `static-serve.js` 托管，需配置端口；源码版用系统 Node，EXE 版用内置 Node（`ELECTRON_RUN_AS_NODE`）。
-- **端口治理**：启动前判占（409 + 占用者说明）、自动推荐空闲端口、一键换端口重启；`vue-cli-service` 只走 `PORT/HOST` 环境变量，Turbo 透传 `-- -- --port --strictPort --host`。
+- **端口治理**：启动前判占（409 + 占用者说明）、自动推荐空闲端口、一键换端口重启；`vue-cli-service` 只走 `PORT/HOST` 环境变量，Turbo 透传 `-- -- --port --strictPort --host`。**端口参数透传分隔符按包管理器区分**：npm / yarn / bun 需 `--`（它们会吞掉），pnpm 不能加 `--`（pnpm 8 会把它原样透传给脚本，导致 `vite` 把后续 `--port` 当位置参数、端口静默失效回落默认 5173）。
 - **日志聚合**：日志集中落 `DATA_DIR/logs/{id}.log`（源码版 `logs/`，EXE 版 `%APPDATA%\DevDeck\logs`，UTF-8），不再写进用户项目目录；看板看尾 80 行 + SSE 实时流，超 5MB 自动瘦身到 1MB；旧版项目目录 `.devdeck-*.log` 与 CMP 遗留 `.cmp-start*.log` 首次访问自动迁移。
 - **辅助诊断**：规则引擎（无 LLM）按日志画像 + 端口归属 + 进程树聚类输出 error/warn/info 结论卡，每条带可执行动作（启动 / 终止占用者 / 换端口 / 安装依赖 / 看日志）。
 - **桌面壳**：Electron 主窗口 + 托盘（关窗隐藏）+ 桌面悬浮卡 + 开机自启 + 原生目录选择；**单实例锁**防止双开抢端口。
 - **悬浮卡**：卡片高度按内容自适应（项目少时不留大片空白，最多 400px 超出滚动）；拖到屏幕边缘（26px 内）自动吸附，停稳后缩成极简边缘条；**点击细条展开**，移开 0.5s 缩回；头部 `🧲` 按钮可一键吸附 / 取消吸附；支持左/右/上/下四条边与多屏。
+- **悬浮卡内选地址打开**：每个服务的「打开 ▾」在卡片内**内联展开**全部可访问地址（`localhost` + 各局域网 IP），**左键打开、右键复制**；单地址服务直接打开不展开。不用浮层是因为窗口只有 300px 宽，浮层必被窗口边界裁掉。
 
 ## 快速开始
 
@@ -33,14 +34,15 @@ pnpm test          # node --test tests，每个测试文件独立子进程（推
 pnpm test:inproc   # 受限环境：公司电脑若禁止子进程/命名管道，用单进程顺序跑
 ```
 
-覆盖六层（共 42 个用例）：
+覆盖七层（共 49 个用例）：
 
 - `tests/sanitize.test.js` — 转义原语（`&`/`<`/`>`/引号、null 归一）
 - `tests/render-xss.test.js` — 把真实 `sanitize.js` + `app.js` 放进 vm，验证恶意项目配置渲染后不产生标签
+- `tests/service-match.test.js` — 运行中服务 ↔ 本地项目归属匹配：端口漂移撞车时按进程命令行目录认领、端口唯一才兜底、反向匹配不误报「运行中」、父目录前缀不误配
 - `tests/request-guard.test.js` — 控制面 Host/Origin 校验（DNS rebinding、跨站请求）
 - `tests/store.test.js` — 配置原子写、`.bak` 回滚、坏 JSON 隔离
 - `tests/overlay-geometry.test.js` — 悬浮卡吸附判定、停靠条位置（含任务栏夹取）、点击展开位置、光标命中判定、多屏偏移
-- `tests/api.test.js` — 真实加载 `server.js`（`child_process` 打桩，不启动真实进程），验证 403 拦截、CRUD、导入合并、kill 白名单、启动命令下发、静态项目参数、spawn 失败兜底
+- `tests/api.test.js` — 真实加载 `server.js`（`child_process` 打桩，不启动真实进程），验证 403 拦截、CRUD、导入合并、kill 白名单、启动命令下发（含 pnpm / npm 端口参数分隔符差异）、静态项目参数、spawn 失败兜底
 
 ## 打包分发（v1 流程）
 
@@ -85,6 +87,9 @@ pnpm run dist:verify   # 打包 + 自动验包，断言 app.asar.unpacked\static
 | 两条同目录同端口 | 两边各建一次 + 导入只按 id 合并 | 删一条；新版导入已按目录合并 |
 | `:5179` 被占（409） | 源码版 + EXE 版双开 | 新版单实例锁会拦；关掉另一个再起 |
 | 停靠细条会挡住屏幕边缘一小块点击 | 细条改为“点击展开”，窗口必须接收鼠标，无法再穿透 | 点击细条展开后点头部 `🧲` 取消吸附，改为浮动卡片 |
+| 启动了 A 项目，运行中却显示 B 项目名 | 端口没钉住：vite 回落到默认 5173，恰好等于 B 的配置端口，旧匹配逻辑按端口抢先认领 | 已修（匹配改为「命令行目录优先、端口唯一才兜底」）；同时修掉 pnpm 多传 `--` 导致端口静默失效。重启该服务即恢复 |
+| 悬浮卡「打开」下拉被窗口截断/显示不全 | 浮层被 300px 固定宽度的透明窗口裁掉 | 已修（改为卡内内联展开，窗口高度自适应跟随） |
+| 打包报 `EBUSY / EPERM: rmdir|unlink ...release-new\win-unpacked` | 还有 DevDeck.exe 实例在跑，锁住了产物目录 | 完全退出 DevDeck 后重跑：`Get-Process DevDeck -EA SilentlyContinue \| Stop-Process -Force` |
 
 ## 安全
 
@@ -92,6 +97,7 @@ pnpm run dist:verify   # 打包 + 自动验包，断言 app.asar.unpacked\static
 - **`/api/*` 增加 Host/Origin 校验**（`lib/request-guard.js`）：只接受回环 Host；带 Origin 的请求必须来自同一端口。用于挡 DNS rebinding 与跨站直连——否则任意网页都能驱动本机的 kill/启动接口。
 - **前端渲染统一转义**（`public/sanitize.js`）：项目名/目录/命令/进程命令行一律经 `DDSafe` 转义后才进 DOM，动态卡片改事件委托，不再拼 `onclick`。配置导入的 JSON 视为不可信输入。
 - `server.js` 用 `spawn` 参数化 PowerShell（-EncodedCommand UTF-16LE），目录/命令含引号已转义；`kill-service` 仅允许终止占端口的 node/静态托管进程，拒绝 DevDeck 自身。
+- 悬浮卡「右键复制地址」走主进程 `clipboard.writeText`（IPC `overlay:copy-text`），不用渲染端的 `navigator.clipboard`（悬浮窗里常被权限策略拦截）；地址仍只接受 `http(s)` 才 `shell.openExternal`。
 - 配置以服务端 `devdeck.json` 为唯一真相；`localStorage` 只做离线缓存，离线新增的「仅本地」项在连上服务后自动补录。
 
 ## P0 安全修复（分支 fix/p0-hardening）
@@ -123,6 +129,60 @@ pnpm run dist:verify   # 打包 + 自动验包，断言 app.asar.unpacked\static
 - **细条改为点击展开**：停靠态细条不再鼠标穿透，点击才展开（悬停只做高亮放大反馈），避免鼠标扫过边缘误触；展开后移开 0.5s 缩回
 - **移除折叠功能**：原头部折叠按钮改为 `🧲` 吸附按钮（浮动态吸附到最近边缘 / 展开态取消吸附退回浮动），`collapsed` 状态与相关高度逻辑已清理
 - 安装包版本 `0.1.4`
+
+## 0.1.4 修订（服务名归属修复 + 悬浮卡选地址打开）
+
+> 沿用 `0.1.4` 版本号（未升版），新安装包覆盖同名文件；如需区分请手动改 `package.json` 的 `version` 后重新打包。
+
+### 修复：启动的明明是 A 项目，卡片却显示 B 项目名
+
+两个 bug 叠加，表象是"名字错了"，实际是**端口根本没生效**。
+
+1. **pnpm 端口透传失效（根因，`server.js`）**
+
+   `launch()` 原来统一拼 `pnpm serve -- --port 5188 --strictPort`。实测 pnpm 8.15 会把 `--` **原样透传给脚本**（npm / yarn / bun 会吞掉），于是 vite 收到的首个参数是 `"--"`，cac 视其为"选项结束"，后续 `--port/--strictPort` 全被当成位置参数（root）——端口配置静默失效，回落到默认 `5173`。
+
+   | 命令 | 脚本实际收到的 argv |
+   |---|---|
+   | `pnpm serve -- --port 5188 --strictPort` | `["--","--port","5188","--strictPort"]` ✘ |
+   | `pnpm serve --port 5188 --strictPort` | `["--port","5188","--strictPort"]` ✔ |
+   | `npm run serve -- --port 5188` | `["--port","5188"]` ✔ |
+
+   改为按包管理器选择分隔符（pnpm 用空格，其余用 ` -- `），turbo 场景再多保留一层 `--`。
+
+2. **前端匹配"端口优先"导致张冠李戴（`public/app.js`、`public/overlay.js`）**
+
+   旧 `matchLocal` 是 `items.find(端口命中 || 目录命中)`，`find` 取第一个命中：漂移到 5173 的 DSSDT 进程被排在数组前面的「分层分群项目【HCP】」按端口抢先认领。
+
+   更危险的连带伤害是卡片上的「🔄 重启」：`data-id` 取的是匹配到的项目，对着 DSSDT 点重启会**拿 HCP 的配置去拉起 HCP**。
+
+   改为：**命令行目录命中优先**（多个命中取最长目录，避免父目录前缀抢认）→ **端口唯一命中才兜底**。新增反向 `serviceOf()` 给本地项目找运行中服务，`paintCustomStatus` 复用同一口径，主看板与悬浮卡统一种算法。
+
+### 新增：悬浮卡「打开 ▾」支持多地址选择 + 右键复制
+
+上一版用 `position: fixed` 做浮层菜单，但悬浮卡是**固定 300px 宽的透明窗口**，菜单向右/向下延伸会被窗口边界裁掉（截图里 `192.168.0.106:8084` 正好断在末尾）。
+
+改为**卡内内联展开**（地址列表参与正常文档流，窗口高度自适应跟随）：
+
+- 多地址服务点「打开 ▾」展开全部地址（`localhost` + 各局域网 IP），单地址直接打开
+- 每条地址：**左键打开**（`shell.openExternal`）、**右键复制**（主进程 `clipboard.writeText`）
+- 展开的地址面板自动 `scrollIntoView`（含窗口变高后补滚一次），不再被列表下边界挡住
+- 5s 轮询重渲染时保留已展开状态，服务消失才收起
+
+### 测试
+
+- 新增 `tests/service-match.test.js`（5 例）：用真实漂移命令行做回归，覆盖目录认领、端口唯一兜底、共用端口不猜、反向不误认、父目录前缀不误配
+- `tests/api.test.js` 新增 2 例：pnpm 场景断言命令行**不含** `-- --port`；npm 场景断言**保留** `--`
+- 用例总数 42 → 49
+
+### 打包备注
+
+`npm run dist` 报 `EBUSY / EPERM: rmdir|unlink ...release-new\win-unpacked` 的唯一原因是**本机还有 DevDeck.exe 实例在跑**，锁住了产物目录。打包前先完全退出：
+
+```powershell
+Get-Process DevDeck -ErrorAction SilentlyContinue | Stop-Process -Force
+npm run dist:verify
+```
 
 ## v1.0 变更
 

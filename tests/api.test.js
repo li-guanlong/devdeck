@@ -182,6 +182,31 @@ test('静态项目：命令行只带位置参数端口，不再追加 --port', a
   assert.ok(!/--port/.test(cmd), '静态托管不应再拼接 --port：' + cmd);
 });
 
+test('pnpm 项目：端口参数不留 "--"（pnpm 会把它透传给脚本，vite 端口直接失效）', async () => {
+  const created = await request('POST', '/api/custom-projects', {
+    headers: loopback(),
+    body: { name: 'pnpmP2', dir: dataDir, cmd: 'pnpm serve', port: 5331, stack: 'Vite' }
+  });
+  assert.equal(created.status, 200);
+  const r = await request('POST', '/api/start-project', { headers: loopback(), body: { id: created.json.id } });
+  assert.equal(r.status, 200);
+  const cmd = lastLaunchScript();
+  assert.match(cmd, /pnpm serve --port 5331 --strictPort/, 'pnpm 应直接传参：' + cmd);
+  assert.ok(!/-- --port/.test(cmd), 'pnpm 场景不能出现 "-- --port"：' + cmd);
+});
+
+test('npm 项目：保留 "--" 分隔符（npm 会吞掉它，脚本才收得到端口）', async () => {
+  const created = await request('POST', '/api/custom-projects', {
+    headers: loopback(),
+    body: { name: 'npmP3', dir: dataDir, cmd: 'npm run dev', port: 5332, stack: 'Vite' }
+  });
+  assert.equal(created.status, 200);
+  const r = await request('POST', '/api/start-project', { headers: loopback(), body: { id: created.json.id } });
+  assert.equal(r.status, 200);
+  const cmd = lastLaunchScript();
+  assert.match(cmd, /npm run dev -- --port 5332 --strictPort/, 'npm 需要 "--" 分隔：' + cmd);
+});
+
 test('spawn 同步抛错（EPERM）：返回 500 且服务不崩', async () => {
   const list = await request('GET', '/api/custom-projects', { headers: loopback() });
   const item = list.json.find(x => x.name === 'P0测试项目');
